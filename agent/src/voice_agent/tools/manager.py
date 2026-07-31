@@ -7,7 +7,6 @@ from typing import Any, Awaitable, Callable, Protocol, runtime_checkable
 
 from ..config import Settings
 from ..logging_config import get_logger
-from .webhook_tool import WebhookTool
 
 logger = get_logger("tools.manager")
 
@@ -58,6 +57,8 @@ class ToolManager:
     @classmethod
     def from_settings(cls, settings: Settings) -> "ToolManager":
         """Build the default registry from the configured webhook base URL."""
+        from .webhook_tool import WebhookTool  # deferred: breaks manager<->webhook_tool cycle
+
         return cls([WebhookTool(settings)])
 
     def schemas(self) -> list[dict[str, Any]]:

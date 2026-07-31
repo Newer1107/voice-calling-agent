@@ -20,6 +20,7 @@ from typing import Any
 
 import livekit.rtc as rtc
 from livekit.agents import AutoSubscribe, JobContext, WorkerOptions, WorkerType, cli
+from livekit.agents.job import JobExecutorType
 
 from .api import create_app
 from .clients.base import LLMClient
@@ -41,7 +42,7 @@ class SharedServices:
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.conversations = ConversationManager(settings.session_history_limit)
+        self.conversations = _get_conversations(settings)
         # 15: STT is intentionally per-session, not shared here
         self.llm: LLMClient = OllamaClient(settings)
         self.tts: KokoroClient = KokoroClient(settings)
@@ -57,7 +58,24 @@ class SharedServices:
 
 
 _shared: SharedServices | None = None
-_api_task: asyncio.Task | None = None
+_api_thread_started: bool = False
+_conversations: ConversationManager | None = None
+_conversations_lock = threading.Lock()
+
+
+def _get_conversations(settings: Settings) -> ConversationManager:
+    """Shared conversation store for the API thread AND session loops.
+
+    Lives outside SharedServices so the FastAPI helper (daemon thread, own
+    event loop) and sessions (worker loop) see the same instance; the manager
+    is thread-safe via threading.Lock.
+    """
+    global _conversations
+    if _conversations is None:
+        with _conversations_lock:
+            if _conversations is None:
+                _conversations = ConversationManager(settings.session_history_limit)
+    return _conversations
 
 
 def _get_shared(settings: Settings) -> SharedServices:
@@ -67,44 +85,45 @@ def _get_shared(settings: Settings) -> SharedServices:
     return _shared
 
 
-async def _run_api(shared: SharedServices) -> None:
+def _start_api_in_thread(settings: Settings) -> None:
+    """Run the FastAPI helper in a daemon thread with its own event loop."""
+    global _api_thread_started
+    if _api_thread_started or not settings.enable_agent_api:
+        return
+    _api_thread_started = True
+    conversations = _get_conversations(settings)
+
+    def _run() -> None:
+        try:
+            asyncio.run(_run_api(settings, conversations))
+        except OSError as exc:
+            # another job process already bound the port; the API is live there
+            logger.warning("agent API bind skipped", extra={"event": "api.bind_skipped", "error": str(exc)})
+
+    threading.Thread(target=_run, name="agent-api", daemon=True).start()
+
+
+async def _run_api(settings: Settings, conversations: ConversationManager) -> None:
     import uvicorn
 
-    app = create_app(shared.settings, shared.conversations)
+    app = create_app(settings, conversations)
     config = uvicorn.Config(
         app,
-        host=shared.settings.agent_host,
-        port=shared.settings.agent_port,
+        host=settings.agent_host,
+        port=settings.agent_port,
         log_level="warning",
         access_log=False,
     )
     server = uvicorn.Server(config)
     logger.info(
         "agent API starting",
-        extra={"event": "api.start", "host": shared.settings.agent_host, "port": shared.settings.agent_port},
+        extra={"event": "api.start", "host": settings.agent_host, "port": settings.agent_port},
     )
     try:
         await server.serve()
     except asyncio.CancelledError:
         logger.info("agent API stopped", extra={"event": "api.stop"})
         raise
-
-
-def _report_api_failure(task: asyncio.Task) -> None:
-    if task.cancelled():
-        return
-    exc = task.exception()
-    if exc is not None:
-        logger.error("agent API task failed", extra={"event": "api.failed", "error": str(exc)})
-
-
-async def _ensure_api_task(shared: SharedServices) -> None:
-    global _api_task
-    if not shared.settings.enable_agent_api:
-        return
-    if _api_task is None or _api_task.done():
-        _api_task = asyncio.create_task(_run_api(shared), name="agent-api")
-        _api_task.add_done_callback(_report_api_failure)
 
 
 async def _wait_for_participant(room: rtc.Room, timeout: float = 30.0) -> rtc.RemoteParticipant | None:
@@ -137,14 +156,13 @@ async def entrypoint(job: JobContext) -> None:
     settings = Settings()
     setup_logging(settings.agent_log_level, settings.agent_log_format)
     shared = _get_shared(settings)
-    await _ensure_api_task(shared)
 
     await job.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
     logger.info("worker connected to room", extra={"event": "connection.connected", "room": job.room.name})
 
     participant = await _wait_for_participant(job.room)
     if participant is None:
-        await job.shutdown()
+        job.shutdown()
         return
 
     stt = WhisperClient(shared.settings)
@@ -178,32 +196,42 @@ async def entrypoint(job: JobContext) -> None:
         await stt.aclose()
 
 
-async def prewarm(_proc: Any) -> None:
-    """Start the in-process API in the job process before the first job."""
+async def prewarm_async(_proc: Any) -> None:
+    """0.x async prewarm hook: start the in-process API before the first job."""
     settings = Settings()
     setup_logging(settings.agent_log_level, settings.agent_log_format)
-    shared = _get_shared(settings)
-    await _ensure_api_task(shared)
+    _start_api_in_thread(settings)
 
 
-def _start_api_in_thread(settings: Settings) -> None:
-    """0.x fallback: run the API in a daemon thread with its own event loop."""
+def prewarm(_proc: Any) -> None:
+    """1.6+ sync prewarm hook: livekit-agents calls this WITHOUT awaiting.
 
-    def _run() -> None:
-        asyncio.run(_run_api(_get_shared(settings)))
-
-    threading.Thread(target=_run, name="agent-api", daemon=True).start()
+    The FastAPI helper runs in a daemon thread with its own event loop (the
+    job process's main loop serves sessions; the API thread serves HTTP). The
+    ConversationManager is thread-safe (threading.Lock) so both can share it.
+    """
+    settings = Settings()
+    setup_logging(settings.agent_log_level, settings.agent_log_format)
+    _start_api_in_thread(settings)
 
 
 def _build_worker_options(settings: Settings) -> WorkerOptions:
-    """WorkerOptions with entrypoint/prewarm kwarg names resolved across livekit-agents versions."""
+    """WorkerOptions with kwarg names resolved across livekit-agents versions."""
     params = inspect.signature(WorkerOptions.__init__).parameters
-    keyword = "entrypoint" if "entrypoint" in params else "entrypoint_fnc"
+    entrypoint_kw = "entrypoint" if "entrypoint" in params else "entrypoint_fnc"
+    # livekit-agents 1.6+ renamed the worker-name kwarg to agent_name.
+    name_kw = "agent_name" if "agent_name" in params else "name"
     options = {
-        keyword: entrypoint,
+        entrypoint_kw: entrypoint,
         "worker_type": WorkerType.ROOM,
-        "name": settings.livekit_worker_name,
-        "num_idle_processes": 1,  # single job runner -> single in-process API instance
+        name_kw: settings.livekit_worker_name,
+        # THREAD executor: jobs run in-process so the ConversationManager and
+        # the single API instance are shared across all sessions (PROC would
+        # fork per-job processes, breaking /history and double-binding :8090).
+        "job_executor_type": JobExecutorType.THREAD,
+        "ws_url": settings.livekit_url,
+        "api_key": settings.livekit_api_key,
+        "api_secret": settings.livekit_api_secret,
     }
     if "prewarm_fnc" in params:
         options["prewarm_fnc"] = prewarm

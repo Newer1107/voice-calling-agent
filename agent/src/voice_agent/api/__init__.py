@@ -13,6 +13,10 @@ from datetime import timedelta
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from livekit.api import AccessToken, VideoGrants
+from livekit.api.agent_dispatch_service import AgentDispatchService
+from livekit.api.room_service import RoomService
+from livekit.protocol.agent_dispatch import CreateAgentDispatchRequest, RoomAgentDispatch
+from livekit.protocol.room import CreateRoomRequest
 from pydantic import BaseModel, Field
 
 from .. import __version__
@@ -58,7 +62,11 @@ def create_app(settings: Settings, conversations: ConversationManager) -> FastAP
 
     @app.post("/token", response_model=TokenResponse)
     async def token(body: TokenRequest) -> TokenResponse:
-        """Issue a short-lived LiveKit join token for the requested room."""
+        """Issue a short-lived LiveKit join token for the requested room.
+
+        Also creates an explicit agent dispatch for the room so the worker is
+        called to join it (LiveKit 1.x does not auto-dispatch room jobs).
+        """
         identity = body.identity or f"web-{uuid.uuid4().hex[:12]}"
         jwt = (
             AccessToken(api_key=settings.livekit_api_key, api_secret=settings.livekit_api_secret)
@@ -67,6 +75,7 @@ def create_app(settings: Settings, conversations: ConversationManager) -> FastAP
             .with_grants(VideoGrants(room_join=True, room=body.roomName))
             .to_jwt()
         )
+        await _ensure_dispatch(settings, body.roomName)
         logger.info(
             "token issued",
             extra={"event": "token.issued", "room": body.roomName, "identity": identity},
@@ -92,3 +101,61 @@ def create_app(settings: Settings, conversations: ConversationManager) -> FastAP
         }
 
     return app
+
+
+async def _ensure_dispatch(settings: Settings, room_name: str) -> None:
+    """Attach the voice agent to the room so the worker is dispatched to it.
+
+    LiveKit 1.x only calls the worker to join a room when a dispatch exists.
+    Order matters: a dispatch cannot target a room that does not exist yet,
+    so we create the room WITH the agent embedded in one call. If the room
+    already exists (browser joined first), fall back to adding the dispatch
+    via AgentDispatchService. Idempotent: repeated /token calls do not stack
+    dispatches.
+    """
+    import aiohttp
+
+    if not settings.enable_agent_api or not settings.livekit_worker_name:
+        return
+    agent_name = settings.livekit_worker_name
+    session = aiohttp.ClientSession()
+    try:
+        room_service = RoomService(
+            session, settings.livekit_url, settings.livekit_api_key, settings.livekit_api_secret
+        )
+        try:
+            await room_service.create_room(
+                CreateRoomRequest(
+                    name=room_name,
+                    agents=[RoomAgentDispatch(agent_name=agent_name)],
+                )
+            )
+            logger.info(
+                "room created with agent dispatch",
+                extra={"event": "dispatch.created", "room": room_name, "agent": agent_name},
+            )
+            return
+        except Exception:
+            # room already exists -> ensure the dispatch is present
+            pass
+
+        dispatch_service = AgentDispatchService(
+            session, settings.livekit_url, settings.livekit_api_key, settings.livekit_api_secret
+        )
+        existing = await dispatch_service.list_dispatch(room_name)
+        if any(d.agent_name == agent_name for d in existing):
+            return
+        await dispatch_service.create_dispatch(
+            CreateAgentDispatchRequest(agent_name=agent_name, room=room_name)
+        )
+        logger.info(
+            "agent dispatch created",
+            extra={"event": "dispatch.created", "room": room_name, "agent": agent_name},
+        )
+    except Exception as exc:  # dispatch is best-effort; token still works
+        logger.warning(
+            "agent dispatch failed",
+            extra={"event": "dispatch.failed", "room": room_name, "error": str(exc)},
+        )
+    finally:
+        await session.close()

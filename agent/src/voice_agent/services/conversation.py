@@ -1,4 +1,4 @@
-"""Per-session conversation history.
+﻿"""Per-session conversation history.
 
 Sessions are created lazily and idempotently; messages are stored in OpenAI
 conversation shape (user / assistant / tool) so history can be handed
@@ -9,8 +9,7 @@ replayed and is visible through the history API.
 
 from __future__ import annotations
 
-import asyncio
-import logging
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -69,16 +68,22 @@ class Conversation:
 
 
 class ConversationManager:
-    """asyncio-locked registry of per-session conversations."""
+    """threading-locked registry of per-session conversations.
+
+    Thread-safe on purpose: the FastAPI helper (history API) runs in a daemon
+    thread with its own event loop while sessions run on the worker loop, so
+    an asyncio.Lock would be bound to whichever loop touched it first. The
+    critical sections are short dict ops â€” a threading.Lock is correct here.
+    """
 
     def __init__(self, history_limit: int) -> None:
         self._history_limit = history_limit
         self._sessions: dict[str, Conversation] = {}
-        self._lock = asyncio.Lock()
+        self._lock = threading.Lock()
 
     async def get_or_create(self, session_id: str) -> Conversation:
         """Return the conversation for session_id, creating it if missing (idempotent)."""
-        async with self._lock:
+        with self._lock:
             conversation = self._sessions.get(session_id)
             if conversation is None:
                 conversation = Conversation(session_id=session_id)
@@ -88,7 +93,7 @@ class ConversationManager:
 
     async def add_message(self, session_id: str, message: ConversationMessage) -> Conversation:
         """Append a message, trimming history to SESSION_HISTORY_LIMIT."""
-        async with self._lock:
+        with self._lock:
             conversation = self._sessions.get(session_id)
             if conversation is None:
                 conversation = Conversation(session_id=session_id)
@@ -117,7 +122,7 @@ class ConversationManager:
 
     async def history_for_llm(self, session_id: str) -> list[dict[str, Any]]:
         """Conversation history in OpenAI wire format for the chat API."""
-        async with self._lock:
+        with self._lock:
             conversation = self._sessions.get(session_id)
             if conversation is None:
                 return []
@@ -125,12 +130,12 @@ class ConversationManager:
 
     async def history(self, session_id: str) -> Conversation | None:
         """Return the conversation, or None when the session is unknown."""
-        async with self._lock:
+        with self._lock:
             return self._sessions.get(session_id)
 
     async def close(self, session_id: str) -> None:
         """Close a session. Idempotent; safe to call multiple times."""
-        async with self._lock:
+        with self._lock:
             conversation = self._sessions.get(session_id)
             if conversation is None or conversation.closed:
                 return

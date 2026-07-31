@@ -68,7 +68,11 @@ class VADEndpointDetector:
     def push(self, frame: rtc.AudioFrame) -> list[str]:
         duration_ms = 1000.0 * frame.samples_per_channel / float(frame.sample_rate or 1)
         events: list[str] = []
-        if _rms(frame) >= self.config.threshold:
+        # VAD_THRESHOLD is a 0-1 sensitivity knob (Silero-style scale, default
+        # 0.5). RMS of real speech is ~0.02-0.15, so map the knob to an RMS
+        # gate: 0.5 -> ~0.012, higher threshold = less sensitive (higher gate).
+        rms_gate = 0.002 + 0.02 * self.config.threshold
+        if _rms(frame) >= rms_gate:
             if not self.speech_active:
                 self.speech_active = True
                 events.append("started")
