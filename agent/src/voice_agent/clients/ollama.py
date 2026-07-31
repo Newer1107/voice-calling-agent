@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from typing import Any, AsyncIterator
 
 import httpx
@@ -29,54 +30,83 @@ def _status_retryable(status: int) -> bool:
 
 
 def _tool_call_from_text(content: str) -> ToolCall | None:
-    """Detect a tool call the model wrote as JSON text.
+    """Detect a tool call the model wrote as text instead of using the
+    structured ``tool_calls`` field.
 
-    llama3.1 and qwen2.5-coder frequently emit ``{"name": ..., "arguments":
-    {...}}`` inside ``content`` (sometimes with a prose preamble) instead of
-    using the structured ``tool_calls`` field. Extract the first balanced JSON
-    object and convert it so the session executes the tool instead of
-    speaking the JSON.
+    Two shapes are handled:
+    - JSON-in-prose: ``{"name": ..., "arguments": {...}}`` (with or without a
+      prose preamble).
+    - Plain-text call: ``lookupCustomer(name: Sarah)``.
     """
     start = content.find("{")
-    if start == -1:
-        return None
-    depth = 0
-    end = -1
-    in_string = False
-    escape = False
-    for i in range(start, len(content)):
-        ch = content[i]
-        if in_string:
-            if escape:
-                escape = False
-            elif ch == "\\":
-                escape = True
-            elif ch == '"':
-                in_string = False
+    if start != -1:
+        depth = 0
+        end = -1
+        in_string = False
+        escape = False
+        for i in range(start, len(content)):
+            ch = content[i]
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+        if end != -1:
+            try:
+                obj = json.loads(content[start : end + 1])
+            except (json.JSONDecodeError, TypeError):
+                obj = None
+            if isinstance(obj, dict):
+                name = obj.get("name")
+                parameters = obj.get("parameters") or obj.get("arguments")
+                if isinstance(name, str) and isinstance(parameters, dict):
+                    return ToolCall(id="text_call", name=name, arguments=parameters)
+                if isinstance(obj.get("tool"), str) and isinstance(obj.get("params"), dict):
+                    return ToolCall(id="text_call", name=obj["tool"], arguments=obj["params"])
+    return _tool_call_from_name_args(content)
+
+
+_NAME_ARGS = re.compile(r"\b([a-zA-Z][a-zA-Z0-9_]*)\s*\(\s*([^()]*?)\s*\)")
+
+
+def _tool_call_from_name_args(content: str) -> ToolCall | None:
+    """Fallback for the plain-text form the model sometimes emits instead of
+    JSON: ``lookupCustomer(name: Sarah)``. Requires at least one ``key: value``
+    pair inside the parens so ordinary prose like ``Hi (everyone)`` is skipped.
+    """
+    for match in _NAME_ARGS.finditer(content):
+        name, args_raw = match.group(1), match.group(2)
+        if ":" not in args_raw:
             continue
-        if ch == '"':
-            in_string = True
-        elif ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                end = i
-                break
-    if end == -1:
-        return None
-    try:
-        obj = json.loads(content[start : end + 1])
-    except (json.JSONDecodeError, TypeError):
-        return None
-    if not isinstance(obj, dict):
-        return None
-    name = obj.get("name")
-    parameters = obj.get("parameters") or obj.get("arguments")
-    if isinstance(name, str) and isinstance(parameters, dict):
-        return ToolCall(id="text_call", name=name, arguments=parameters)
-    if isinstance(obj.get("tool"), str) and isinstance(obj.get("params"), dict):
-        return ToolCall(id="text_call", name=obj["tool"], arguments=obj["params"])
+        args: dict[str, Any] = {}
+        for part in re.split(r",\s*(?=[A-Za-z_])", args_raw):
+            kv = re.split(r":\s*", part, maxsplit=1)
+            if len(kv) != 2:
+                continue
+            key = kv[0].strip().strip("'\"")
+            value = kv[1].strip().strip("'\"")
+            lowered = value.lower()
+            if lowered == "true":
+                value = True
+            elif lowered == "false":
+                value = False
+            elif re.fullmatch(r"-?\d+", value):
+                value = int(value)
+            args[key] = value
+        if name and args:
+            return ToolCall(id="text_call", name=name, arguments=args)
     return None
 
 

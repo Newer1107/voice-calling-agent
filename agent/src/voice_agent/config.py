@@ -78,6 +78,13 @@ class Settings(BaseSettings):
     agent_log_format: Literal["json", "text"] = Field(default="json")
     session_history_limit: int = Field(default=50, ge=1)
 
+    # --- Dashboard (realtime business console) ------------------------------
+    enable_dashboard: bool = Field(default=True, description="Serve /dashboard/* and /ws/dashboard")
+    dashboard_database_url: str = Field(
+        default="postgresql://raunak@127.0.0.1:5432/voice_dashboard",
+        description="PostgreSQL DSN for dashboard persistence (asyncpg)",
+    )
+
     # --- Computed helpers ----------------------------------------------------
     @property
     def ollama_timeout(self) -> float:

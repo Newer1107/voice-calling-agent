@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 import uuid
 from collections import deque
 from typing import Any
@@ -33,10 +34,17 @@ from ..clients.kokoro import decode_wav
 from ..config import Settings
 from ..events import ClientMessage, EventPublisher
 from ..logging_config import get_logger
-from ..tools.manager import ToolManager
+from ..tools.manager import ToolManager, ToolResult
 from .conversation import ConversationManager, ConversationMessage
 
 logger = get_logger("session")
+
+
+def _now_iso() -> str:
+    """ISO-8601 UTC timestamp for dashboard events."""
+    import datetime as _dt
+
+    return _dt.datetime.now(_dt.timezone.utc).isoformat()
 
 WELCOME_MESSAGE = (
     "Hello, and welcome to IronPeak Fitness! I'm Maya, your receptionist. "
@@ -113,6 +121,8 @@ class VoiceSession:
         tts: TTSClient,
         tools: ToolManager,
         events: EventPublisher,
+        hub: Any | None = None,
+        db: Any | None = None,
     ) -> None:
         self.session_id = session_id
         self._room = room
@@ -124,6 +134,8 @@ class VoiceSession:
         self._tts = tts
         self._tools = tools
         self._events = events
+        self._hub = hub
+        self._db = db
 
         self._tasks: set[asyncio.Task] = set()
         self._turn_lock = asyncio.Lock()
@@ -134,12 +146,32 @@ class VoiceSession:
         self._ptt_active = False
         self._vad_enabled = settings.vad_enabled
         self._audio_source: rtc.AudioSource | None = None
+        self._started_at: float | None = None
+        self._message_count = 0
+        self._any_tool_failed = False
+        self._last_reply: str | None = None
+
+    # -- dashboard events ----------------------------------------------------
+    def _emit(self, type_: str, data: dict[str, Any]) -> None:
+        if self._hub is not None:
+            self._hub.publish(type_, data)
+
+    async def _persist(self, factory: Any) -> None:
+        if self._db is None:
+            return
+        try:
+            await factory()
+        except Exception as exc:
+            logger.warning("dashboard persist failed", extra={"event": "dashboard.persist_failed", "error": str(exc)})
 
     # -- lifecycle -----------------------------------------------------------
     async def start(self) -> None:
         """Open the session: announce, capture input, listen for client messages."""
         await self._events.state_connected(self.session_id)
         await self._events.welcome(self.session_id, WELCOME_MESSAGE)
+        self._started_at = time.monotonic()
+        self._emit("conversation.started", {"conversationId": self.session_id, "startedAt": _now_iso()})
+        await self._persist(lambda: self._db.conversation_started(self.session_id))
         # Not actually listening until PTT is held (or VAD is on) — report the real gate.
         await self._events.state_listening(
             self.session_id,
@@ -161,6 +193,22 @@ class VoiceSession:
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
+        if self._started_at is not None:
+            duration = int(time.monotonic() - self._started_at)
+            self._emit("conversation.finished", {
+                "conversationId": self.session_id,
+                "durationSec": duration,
+                "messageCount": self._message_count,
+                "outcome": "failed" if self._any_tool_failed else "ok",
+                "summary": self._last_reply,
+            })
+            await self._persist(lambda: self._db.conversation_finished(
+                self.session_id,
+                duration,
+                self._message_count,
+                "failed" if self._any_tool_failed else "ok",
+                self._last_reply,
+            ))
         await self._conversations.close(self.session_id)
         logger.info("session closed", extra={"event": "session.closed", "session_id": self.session_id})
 
@@ -229,6 +277,9 @@ class VoiceSession:
             await self._events.state_thinking(self.session_id, active=True)
             await self._events.state_listening(self.session_id, active=False)
             await self._conversations.add_message(self.session_id, ConversationMessage(role="user", content=text))
+            self._message_count += 1
+            self._emit("transcript.updated", {"conversationId": self.session_id, "role": "user", "text": text, "ts": _now_iso()})
+            await self._persist(lambda: self._db.conversation_message(self.session_id, "user", text))
             try:
                 await self._agent_loop()
             except LLMError as exc:
@@ -307,6 +358,10 @@ class VoiceSession:
         # Re-sanitize the assembled text: a JSON echo or markdown that arrived
         # split across streamed deltas is only complete now.
         text = sanitize_spoken_text("".join(parts))
+        self._last_reply = text
+        self._message_count += 1
+        self._emit("transcript.updated", {"conversationId": self.session_id, "role": "assistant", "text": text, "ts": _now_iso()})
+        await self._persist(lambda: self._db.conversation_message(self.session_id, "assistant", text))
         await self._events.message_done(self.session_id, message_id, text)
         if text:
             await self._conversations.add_message(self.session_id, ConversationMessage(role="assistant", content=text))
@@ -342,20 +397,73 @@ class VoiceSession:
             await self._events.error(self.session_id, "tool_failed", f"{call.name}: {call.arguments_parse_error}", recoverable=True)
             return f"Tool {call.name} failed: {call.arguments_parse_error}"
         await self._events.tool_call(self.session_id, call.name, call.arguments)
+        self._emit("tool.started", {"conversationId": self.session_id, "tool": call.name, "args": call.arguments, "ts": _now_iso()})
+        started = time.monotonic()
         try:
             result = await self._tools.execute(call.name, call.arguments, self.session_id)
         except Exception as exc:
+            duration_ms = int((time.monotonic() - started) * 1000)
+            self._any_tool_failed = True
+            self._emit("tool.finished", {"conversationId": self.session_id, "tool": call.name, "ok": False, "durationMs": duration_ms})
+            await self._persist(lambda: self._db.tool_executed(self.session_id, call.name, call.arguments, False, duration_ms))
             logger.error("tool execution failed", extra={"event": "tool_failed", "session_id": self.session_id, "tool": call.name, "error": str(exc)})
             await self._events.tool_error(self.session_id, call.name, str(exc))
             await self._events.error(self.session_id, "tool_failed", f"{call.name}: {exc}", recoverable=True)
             return f"Tool {call.name} failed: {exc}"
+        duration_ms = int((time.monotonic() - started) * 1000)
         if result.ok:
+            self._emit("tool.finished", {"conversationId": self.session_id, "tool": call.name, "ok": True, "durationMs": duration_ms})
+            await self._persist(lambda: self._db.tool_executed(self.session_id, call.name, call.arguments, True, duration_ms))
+            await self._emit_domain_events(call.name, result)
             logger.info("tool result", extra={"event": "tool_response", "session_id": self.session_id, "tool": call.name, "ok": True})
             await self._events.tool_result(self.session_id, call.name, ok=True, summary=result.summary, data=result.data)
             return result.summary
+        self._any_tool_failed = True
+        self._emit("tool.finished", {"conversationId": self.session_id, "tool": call.name, "ok": False, "durationMs": duration_ms})
+        await self._persist(lambda: self._db.tool_executed(self.session_id, call.name, call.arguments, False, duration_ms))
         logger.warning("tool result failed", extra={"event": "tool_response", "session_id": self.session_id, "tool": call.name, "ok": False, "error": result.error})
         await self._events.tool_result(self.session_id, call.name, ok=False, summary=result.error or "tool failed")
         return result.error or f"Tool {call.name} failed"
+
+    async def _emit_domain_events(self, tool: str, result: ToolResult) -> None:
+        """Translate a successful tool result into dashboard domain events."""
+        data = (result.data or {}).get("data") or {}
+        if tool in ("bookAppointment", "bookSpaAppointment"):
+            payload = {
+                "conversationId": self.session_id,
+                "bookingId": data.get("bookingId") or "",
+                "customer": data.get("member") or data.get("customer") or "",
+                "session": data.get("session") or "",
+                "date": data.get("date") or "",
+                "time": data.get("time") or "",
+                "status": data.get("status") or "confirmed",
+            }
+            self._emit("appointment.created", payload)
+            await self._persist(lambda: self._db.appointment_created(self.session_id, data))
+        elif tool == "createOrder":
+            payload = {
+                "conversationId": self.session_id,
+                "orderId": data.get("orderId") or "",
+                "customer": data.get("member") or data.get("customer") or "",
+                "items": data.get("items") or [],
+                "status": data.get("status") or "processing",
+                "total": data.get("total") or "",
+            }
+            self._emit("order.created", payload)
+            await self._persist(lambda: self._db.order_created(self.session_id, data))
+        elif tool == "lookupCustomer":
+            profile = {
+                "name": data.get("name") or "",
+                "tier": data.get("tier") or "Member",
+                "membershipStatus": data.get("membershipStatus") or "active",
+                "visitsThisMonth": data.get("visitsThisMonth") or 0,
+                "upcomingBookings": data.get("upcomingBookings") or [],
+            }
+            self._emit("customer.loaded", {"conversationId": self.session_id, "customer": profile})
+            await self._persist(lambda: self._db.customer_loaded(self.session_id, data))
+            name = data.get("name") or ""
+            if name:
+                await self._persist(lambda: self._db.conversation_customer(self.session_id, name))
 
     # -- TTS / audio output --------------------------------------------------
     async def _speak(self, text: str) -> None:

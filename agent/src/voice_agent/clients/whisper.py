@@ -35,6 +35,16 @@ _MODEL: Any = None
 _MODEL_LOCK = threading.Lock()
 
 
+def _mark_whisper_ok(settings: Settings) -> None:
+    """Report Whisper health to the dashboard hub (system status page)."""
+    try:
+        from ..dashboard.hub import get_hub
+
+        get_hub(settings).set_service("whisper", "ok")
+    except Exception:
+        pass
+
+
 def warmup_stt(settings: Settings) -> None:
     """Preload the shared Whisper model at worker startup (off the job path)."""
     global _MODEL
@@ -50,6 +60,7 @@ def warmup_stt(settings: Settings) -> None:
                 compute_type=settings.stt_compute_type,
             )
             logger.info("whisper model warmed", extra={"event": "stt.model_warmed", "model": settings.stt_model_size})
+            _mark_whisper_ok(settings)
 # Domain vocabulary bias for short utterances — improves word accuracy on
 # gym-specific terms ("gym plans" instead of "jump lands").
 _INITIAL_PROMPT = (
@@ -166,6 +177,7 @@ class WhisperClient:
                             compute_type=self.settings.stt_compute_type,
                         )
             self._model = _MODEL
+            _mark_whisper_ok(self.settings)
             logger.info("whisper model loaded", extra={"event": "stt.model_loaded", "model": self.settings.stt_model_size})
         except Exception as exc:
             self._model_error = str(exc)

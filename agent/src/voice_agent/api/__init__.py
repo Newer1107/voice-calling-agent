@@ -47,8 +47,14 @@ class TokenResponse(BaseModel):
     identity: str
 
 
-def create_app(settings: Settings, conversations: ConversationManager) -> FastAPI:
+def create_app(
+    settings: Settings,
+    conversations: ConversationManager,
+    hub: Any | None = None,
+    db: Any | None = None,
+) -> FastAPI:
     """Build the helper FastAPI application."""
+    from ..dashboard import build_dashboard_router
 
     app = FastAPI(title="Voice Agent API", version=__version__, docs_url=None, redoc_url=None)
 
@@ -59,6 +65,9 @@ def create_app(settings: Settings, conversations: ConversationManager) -> FastAP
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    if settings.enable_dashboard and hub is not None and db is not None:
+        app.include_router(build_dashboard_router(settings, hub, db))
 
     @app.post("/token", response_model=TokenResponse)
     async def token(body: TokenRequest) -> TokenResponse:

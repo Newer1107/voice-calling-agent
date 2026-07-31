@@ -47,6 +47,13 @@ class SharedServices:
         self.llm: LLMClient = OllamaClient(settings)
         self.tts: KokoroClient = KokoroClient(settings)
         self.tools: ToolManager = ToolManager.from_settings(settings)
+        self.hub: Any = None
+        self.db: Any = None
+        if settings.enable_dashboard:
+            from .dashboard import DashboardDB, get_hub
+
+            self.hub = get_hub(settings)
+            self.db = DashboardDB(settings)
 
     async def aclose(self) -> None:
         await asyncio.gather(
@@ -106,7 +113,13 @@ def _start_api_in_thread(settings: Settings) -> None:
 async def _run_api(settings: Settings, conversations: ConversationManager) -> None:
     import uvicorn
 
-    app = create_app(settings, conversations)
+    hub = db = None
+    if settings.enable_dashboard:
+        from .dashboard import DashboardDB, get_hub
+
+        hub = get_hub(settings)
+        db = DashboardDB(settings)
+    app = create_app(settings, conversations, hub, db)
     config = uvicorn.Config(
         app,
         host=settings.agent_host,
@@ -177,6 +190,8 @@ async def entrypoint(job: JobContext) -> None:
         tts=shared.tts,
         tools=shared.tools,
         events=EventPublisher(job.room),
+        hub=shared.hub,
+        db=shared.db,
     )
     await session.start()
 
