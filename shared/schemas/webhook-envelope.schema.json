@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://voice-agent.local/contracts/webhook-envelope.schema.json",
+  "title": "n8n Webhook Tool Envelope",
+  "description": "Request and response envelopes exchanged between the agent's tool layer and n8n webhook workflows. See shared/contracts/webhook.md for the full convention.",
+  "type": "object",
+  "definitions": {
+    "webhookRequest": {
+      "type": "object",
+      "required": ["tool", "sessionId", "params"],
+      "additionalProperties": false,
+      "properties": {
+        "tool": { "type": "string", "description": "Tool name, e.g. bookAppointment" },
+        "sessionId": { "type": "string", "description": "Stable conversation id (traceability on the n8n side)" },
+        "params": { "type": "object", "description": "Tool arguments the LLM produced" }
+      }
+    },
+    "webhookResponse": {
+      "type": "object",
+      "required": ["ok"],
+      "properties": {
+        "ok": { "type": "boolean", "description": "Success flag. Must be a real boolean — the agent rejects non-boolean values." },
+        "data": { "description": "Result payload on success" },
+        "error": { "type": ["string", "null"], "description": "Human-readable failure reason" }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "required": ["ok"], "properties": { "ok": { "const": true } } },
+      "then": { "properties": { "data": {} }, "required": ["data"] }
+    },
+    {
+      "if": { "required": ["ok"], "properties": { "ok": { "const": false } } },
+      "then": { "required": ["error"] }
+    }
+  ]
+}

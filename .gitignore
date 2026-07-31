@@ -1,0 +1,38 @@
+# --- secrets & local config (never commit) ---
+# opencode.json holds the live n8n MCP bearer token — machine-local tooling.
+opencode.json
+opencode.jsonc
+.opencode/
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# --- python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+*.pyc
+
+# --- node / next ---
+node_modules/
+.next/
+out/
+dist/
+*.tsbuildinfo
+next-env.d.ts
+
+# --- tooling noise ---
+.codegraph/
+.graymatter/
+.omo/
+.idea/
+.vscode/
+*.log
+.DS_Store
+Thumbs.db
