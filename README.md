@@ -7,7 +7,7 @@ webhooks, and speaks back — all streamed over **LiveKit Cloud**.
 ```
 Browser → LiveKit Cloud → Python Agent (Home Server)
         → Faster-Whisper → Ollama (AI Server) → [n8n webhooks] → Ollama
-        → Kokoro TTS → LiveKit Cloud → Browser
+        → Edge TTS (en-IN, Kokoro fallback) → LiveKit Cloud → Browser
 ```
 
 ## Components
@@ -49,29 +49,164 @@ reachable from the Home Server's **local LAN IP** (e.g.
 `http://192.168.x.x:11434`) — never assume localhost. The URL comes from the
 `OLLAMA_BASE_URL` environment variable.
 
-## Network flow
+## Architecture
 
-```
-Browser (anywhere)
-  │  microphone audio / TTS playback / data channel
-  ▼
-LiveKit Cloud (managed, public wss://)
-  ▲                              ▲
-  │ joined as participant        │ joined as participant (agent)
-  ▼                              │
-Python Agent (Home Server) ──────┘
-  │ POST /token + GET /history (browser → agent)
-  │
-  ├── Faster-Whisper (local STT)
-  ├── Ollama (AI Server, LAN: http://192.168.x.x:11434)
-  │     └── tool calls → n8n webhooks (Home Server)
-  └── Kokoro TTS (local, HTTP wrapper)
+```mermaid
+flowchart TB
+    subgraph B["Browser — Voice Console (Next.js)"]
+        UI["Console UI<br/>transcript · controls · tool cards"]
+        MIC["Microphone"]
+        SPK["Speaker"]
+    end
+
+    subgraph LK["LiveKit Cloud (managed)"]
+        ROOM["Room<br/>WebRTC audio + data channel"]
+    end
+
+    subgraph HS["Home Server — Python Agent"]
+        API["FastAPI helper<br/>POST /token · GET /history · GET /health"]
+        SESS["VoiceSession<br/>turn orchestration · PTT/VAD gating"]
+        EV["EventPublisher<br/>data-channel envelopes"]
+        TM["ToolManager<br/>8 webhook tools"]
+        STT["Faster-Whisper<br/>local STT"]
+        OCL["OllamaClient"]
+        TCL["TTSClient"]
+        MEM["ConversationManager<br/>session memory"]
+    end
+
+    subgraph AI["AI Server — Ollama"]
+        LLM["qwen2.5-coder:7b"]
+    end
+
+    subgraph N8N["Home Server — n8n (mock business logic)"]
+        W1["/book-appointment"]
+        W2["/book-spa-appointment"]
+        W3["/get-membership"]
+        W4["/upgrade-membership"]
+        W5["/create-order"]
+        W6["/lookup-customer"]
+        W7["/check-inventory"]
+        W8["/send-email"]
+    end
+
+    subgraph TTS["Home Server — TTS wrapper (POST /tts)"]
+        EDGE["Edge TTS — en-IN-NeerjaNeural<br/>(primary, Indian English)"]
+        KOK["Kokoro-82M<br/>(offline fallback)"]
+    end
+
+    UI -->|"POST /token (roomName, identity)"| API
+    API -->|"short-lived JWT + wss URL"| UI
+    UI -->|"join room"| ROOM
+    MIC --> ROOM
+    ROOM -->|"audio frames (16 kHz)"| SESS
+    ROOM -->|"client.ptt.start/stop · client.config"| EV
+    EV -->|"agent.* · state.* · transcript.* · tool.*"| UI
+
+    SESS -->|"push(frame)"| STT
+    STT -->|"speech events"| SESS
+    SESS -->|"history + tools"| OCL
+    OCL -->|"chat completions"| LLM
+    LLM -->|"reply or JSON tool call"| OCL
+    OCL -->|"tool calls"| SESS
+    SESS -->|"execute"| TM
+    TM -->|"POST {tool, sessionId, params}"| N8N
+    N8N -->|"{ok, data|error}"| TM
+    SESS <--> MEM
+
+    SESS -->|"sanitized sentences"| TCL
+    TCL -->|"POST /tts {text, voice, speed}"| EDGE
+    EDGE -->|"wav"| TCL
+    TCL -.->|"network failure"| KOK
+    KOK -->|"wav"| TCL
+    TCL -->|"audio frames"| SESS
+    SESS -->|"playback"| ROOM
+    ROOM -->|"audio"| SPK
 ```
 
-The browser never communicates directly with Ollama, Whisper, Kokoro,
+The browser never communicates directly with Ollama, Whisper, the TTS engine,
 PostgreSQL, Redis, or n8n. The Python Agent is the only orchestration layer.
 LiveKit secrets exist only on the agent (Home Server); the browser receives a
 short-lived JWT from the agent's `POST /token`.
+
+## How a conversation works
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant B as Browser
+    participant R as LiveKit Room
+    participant S as VoiceSession
+    participant W as Faster-Whisper
+    participant O as Ollama (qwen2.5-coder)
+    participant T as ToolManager
+    participant N as n8n webhook
+    participant V as TTS wrapper
+
+    B->>S: join (token from POST /token)
+    S->>B: agent.welcome — "Hello, welcome to IronPeak Fitness…"
+    Note over B,W: User holds Space (PTT) or VAD hears speech
+    B->>R: microphone audio
+    R->>S: 16 kHz audio frames
+    loop while speaking
+        S->>W: push(frame)
+    end
+    W-->>S: transcript.final — "My name is Ravi…"
+    S->>B: transcript.final event
+    S->>O: complete(history, tools)
+    O-->>S: tool call — getMembership(name: Ravi)
+    S->>T: execute(getMembership, params)
+    T->>N: POST /get-membership {tool, sessionId, params}
+    N-->>T: {ok: true, data: {tier, expiresOn, daysRemaining}}
+    T-->>S: ToolResult summary
+    S->>B: tool.call + tool.result events
+    S->>O: complete(history + tool result)
+    O-->>S: "Great news, Ravi! Your Silver membership…"
+    S->>S: sanitize markdown/symbols, enforce English
+    S->>V: POST /tts (sentence, en-IN-NeerjaNeural)
+    V-->>S: wav
+    S->>R: audio frames
+    R->>B: spoken reply
+```
+
+### Step by step
+
+1. **Join** — the browser requests a short-lived LiveKit token from the agent's
+   `POST /token`, then connects to a room on LiveKit Cloud. The agent joins the
+   same room as the `voice-agent` participant.
+
+2. **Greeting** — the agent publishes `agent.welcome` ("Hello, welcome to
+   IronPeak Fitness…") over the data channel, which the browser speaks and shows
+   as the first transcript line.
+
+3. **Listen** — the user holds **Space** (push-to-talk) or has **Voice
+   activity** enabled. Audio is gated at the session level: in PTT mode nothing
+   reaches the STT until the button/key is held; on release, buffered audio is
+   flushed and processed. Mic frames stream into Faster-Whisper (in-process,
+   16 kHz mono), producing `transcript.partial` events live and a
+   `transcript.final` when the utterance ends.
+
+4. **Think** — `VoiceSession` runs a turn: it appends the user text to
+   conversation memory and calls Ollama (`qwen2.5-coder:7b`) with the full
+   history plus the registered tool schemas. The model either answers directly
+   or returns a tool call (written as JSON text, which the client parses).
+
+5. **Act** — if a tool call comes back, the `ToolManager` executes it: an
+   `{ok, data|error}` envelope is POSTed to the matching n8n webhook
+   (booking, membership, upgrade, order, inventory, email — all mock). The
+   result is appended to the history and the model is called again, up to
+   `MAX_TOOL_ROUNDS` times, until it answers plainly. The frontend renders
+   `tool.call` / `tool.result` as live execution cards with latency.
+
+6. **Reply** — the final answer is stripped of markdown, symbols and emoji,
+   then streamed sentence-by-sentence to the TTS wrapper. Primary voice is
+   Microsoft Edge TTS (`en-IN-NeerjaNeural`, Indian English); if the network
+   call fails the wrapper falls back to local Kokoro-82M so the agent always
+   speaks. Audio frames are published back through LiveKit and played in the
+   browser while `state.*` events drive the UI indicators.
+
+7. **Remember** — the session keeps the conversation (including the member's
+   name) in `ConversationManager`; history is retrievable via
+   `GET /history/{sessionId}`.
 
 ## Repository layout
 
