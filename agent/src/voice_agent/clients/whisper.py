@@ -27,6 +27,13 @@ logger = get_logger("clients.whisper")
 RECOGNIZE_TIMEOUT_S = 20.0
 PARTIAL_INTERVAL_MS = 2000  # partial transcription cadence while speech is ongoing
 MAX_BUFFER_S = 30.0         # cap: force a final past this much continuous speech
+# Domain vocabulary bias for short utterances — improves word accuracy on
+# gym-specific terms ("gym plans" instead of "jump lands").
+_INITIAL_PROMPT = (
+    "gym, membership, plans, class, yoga, sauna, massage, book, booking, "
+    "upgrade, personal training, order, inventory, session, Sarah, Ravi, "
+    "IronPeak, receptionist"
+)
 
 
 class WhisperClient:
@@ -148,6 +155,7 @@ class WhisperClient:
                 language=self.language_override or self.settings.stt_language,
                 vad_filter=self.endpoint_on_silence,  # silero pass for real endpoints
                 vad_parameters={"min_silence_duration_ms": self.settings.vad_min_silence_ms},
+                initial_prompt=_INITIAL_PROMPT,
             )
             text_parts: list[str] = []
             for segment in segments_iter:
