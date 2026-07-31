@@ -16,10 +16,10 @@ Contract source: `shared/contracts/webhook.md`.
   "tool": "bookAppointment",
   "sessionId": "a3f9c1e2-0000-0000-0000-000000000001",
   "params": {
-    "customerName": "Ada Lovelace",
-    "date": "2026-08-03",
-    "time": "14:30",
-    "service": "Consultation"
+    "customerName": "Sarah",
+    "session": "Yoga Basics",
+    "date": "2026-08-05",
+    "time": "18:30"
   }
 }
 ```
@@ -39,7 +39,7 @@ payloads below for the exact paths.
 n8n workflows must return JSON with a normalized envelope:
 
 ```json
-{ "ok": true, "data": { "appointmentId": "APT-1042", "status": "confirmed" } }
+{ "ok": true, "data": { "bookingId": "GYM-3482", "session": "Yoga Basics", "status": "confirmed" } }
 ```
 
 or, on failure:
@@ -85,11 +85,10 @@ Request:
   "tool": "bookAppointment",
   "sessionId": "a3f9c1e2-0000-0000-0000-000000000001",
   "params": {
-    "customerName": "Ada Lovelace",
-    "date": "2026-08-03",
-    "time": "14:30",
-    "service": "Consultation",
-    "email": "ada@example.com"
+    "customerName": "Sarah",
+    "session": "Yoga Basics",
+    "date": "2026-08-05",
+    "time": "18:30"
   }
 }
 ```
@@ -97,13 +96,13 @@ Request:
 Response:
 
 ```json
-{ "ok": true, "data": { "appointmentId": "APT-1042", "status": "confirmed" } }
+{ "ok": true, "data": { "bookingId": "GYM-3482", "session": "Yoga Basics", "date": "2026-08-05", "time": "18:30", "member": "Sarah", "status": "confirmed" } }
 ```
 
 Failure example (a known reason, `ok: false`):
 
 ```json
-{ "ok": false, "error": "No slots available on 2026-08-03" }
+{ "ok": false, "error": "No slots available on 2026-08-05" }
 ```
 
 ### lookupCustomer → `POST /webhook/voice-agent/lookup-customer`
@@ -114,20 +113,20 @@ Request:
 {
   "tool": "lookupCustomer",
   "sessionId": "a3f9c1e2-0000-0000-0000-000000000001",
-  "params": { "email": "ada@example.com" }
+  "params": { "email": "sarah@example.com" }
 }
 ```
 
 Response:
 
 ```json
-{ "ok": true, "data": { "customerId": "C-88", "name": "Ada Lovelace", "tier": "gold" } }
+{ "ok": true, "data": { "memberId": "M-824", "name": "sarah@example.com", "tier": "Gold", "membershipStatus": "active", "visitsThisMonth": 12 } }
 ```
 
 Failure example:
 
 ```json
-{ "ok": false, "error": "No customer found for ada@example.com" }
+{ "ok": false, "error": "No customer found for sarah@example.com" }
 ```
 
 ### createOrder → `POST /webhook/voice-agent/create-order`
@@ -139,9 +138,8 @@ Request:
   "tool": "createOrder",
   "sessionId": "a3f9c1e2-0000-0000-0000-000000000001",
   "params": {
-    "customerId": "C-88",
-    "items": [{ "sku": "VAS-01", "qty": 2 }],
-    "shipTo": { "city": "London", "postcode": "N1 9GU" }
+    "customerName": "Sarah",
+    "items": [{ "name": "Resistance Band", "quantity": 2 }]
   }
 }
 ```
@@ -149,13 +147,13 @@ Request:
 Response:
 
 ```json
-{ "ok": true, "data": { "orderId": "ORD-5520", "total": "84.50 GBP" } }
+{ "ok": true, "data": { "orderId": "ORD-5530", "member": "Sarah", "items": [{ "name": "Resistance Band", "quantity": 2 }], "total": "59.00 GBP", "status": "processing" } }
 ```
 
 Failure example:
 
 ```json
-{ "ok": false, "error": "SKU VAS-01 is out of stock" }
+{ "ok": false, "error": "Resistance Band is out of stock" }
 ```
 
 ### checkInventory → `POST /webhook/voice-agent/check-inventory`
@@ -166,20 +164,20 @@ Request:
 {
   "tool": "checkInventory",
   "sessionId": "a3f9c1e2-0000-0000-0000-000000000001",
-  "params": { "sku": "VAS-01", "qty": 2 }
+  "params": { "productName": "Kettlebell 16kg" }
 }
 ```
 
 Response:
 
 ```json
-{ "ok": true, "data": { "sku": "VAS-01", "available": 5, "inStock": true, "location": "WH-London" } }
+{ "ok": true, "data": { "item": "Kettlebell 16kg", "available": 5, "inStock": true, "location": "Gym Floor" } }
 ```
 
 Failure example:
 
 ```json
-{ "ok": false, "error": "SKU VAS-01 not found" }
+{ "ok": false, "error": "Kettlebell 16kg not found" }
 ```
 
 ### sendEmail → `POST /webhook/voice-agent/send-email`
@@ -191,9 +189,8 @@ Request:
   "tool": "sendEmail",
   "sessionId": "a3f9c1e2-0000-0000-0000-000000000001",
   "params": {
-    "to": "ada@example.com",
-    "subject": "Appointment confirmed",
-    "body": "See you 2026-08-03 at 14:30."
+    "to": "sarah@example.com",
+    "subject": "Booking confirmed"
   }
 }
 ```
@@ -201,7 +198,7 @@ Request:
 Response:
 
 ```json
-{ "ok": true, "data": { "messageId": "MSG-7" } }
+{ "ok": true, "data": { "messageId": "MSG-7536", "to": "sarah@example.com", "subject": "Booking confirmed", "status": "sent" } }
 ```
 
 Failure example:

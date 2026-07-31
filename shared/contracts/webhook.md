@@ -13,10 +13,10 @@ actual operation (booking, order creation, customer lookup, inventory, email, �
   "tool": "bookAppointment",
   "sessionId": "a3f9c1e2-...",
   "params": {
-    "customerName": "Ada Lovelace",
-    "date": "2026-08-03",
-    "time": "14:30",
-    "service": "Consultation"
+    "customerName": "Sarah",
+    "session": "Yoga Basics",
+    "date": "2026-08-05",
+    "time": "18:30"
   }
 }
 ```
@@ -52,7 +52,7 @@ of a generic one.
 n8n workflows must return JSON with a normalized envelope:
 
 ```json
-{ "ok": true, "data": { "appointmentId": "APT-1042", "status": "confirmed" } }
+{ "ok": true, "data": { "bookingId": "GYM-3482", "session": "Yoga Basics", "status": "confirmed" } }
 ```
 
 or, on failure:
@@ -80,6 +80,10 @@ or, on failure:
 
 ## Example n8n payloads
 
+> The live workflow "Voice Agent Tools" (`f0fAYExKKteCL4cj`) is a **mock gym
+> business**: responses echo the caller's params so the agent can confirm what
+> the user actually asked for.
+
 ### bookAppointment → `POST /webhook/voice-agent/book-appointment`
 
 ```json
@@ -87,16 +91,15 @@ or, on failure:
   "tool": "bookAppointment",
   "sessionId": "a3f9c1e2-0000-0000-0000-000000000001",
   "params": {
-    "customerName": "Ada Lovelace",
-    "date": "2026-08-03",
-    "time": "14:30",
-    "service": "Consultation",
-    "email": "ada@example.com"
+    "customerName": "Sarah",
+    "session": "Yoga Basics",
+    "date": "2026-08-05",
+    "time": "18:30"
   }
 }
 ```
 
-Response: `{ "ok": true, "data": { "appointmentId": "APT-1042", "status": "confirmed" } }`
+Response: `{ "ok": true, "data": { "bookingId": "GYM-3482", "session": "Yoga Basics", "date": "2026-08-05", "time": "18:30", "member": "Sarah", "status": "confirmed" } }`
 
 ### lookupCustomer → `POST /webhook/voice-agent/lookup-customer`
 
@@ -104,11 +107,11 @@ Response: `{ "ok": true, "data": { "appointmentId": "APT-1042", "status": "confi
 {
   "tool": "lookupCustomer",
   "sessionId": "a3f9c1e2-0000-0000-0000-000000000001",
-  "params": { "email": "ada@example.com" }
+  "params": { "email": "sarah@example.com" }
 }
 ```
 
-Response: `{ "ok": true, "data": { "customerId": "C-88", "name": "Ada Lovelace", "tier": "gold" } }`
+Response: `{ "ok": true, "data": { "memberId": "M-824", "name": "sarah@example.com", "tier": "Gold", "membershipStatus": "active", "visitsThisMonth": 12 } }`
 
 ### createOrder → `POST /webhook/voice-agent/create-order`
 
@@ -117,14 +120,25 @@ Response: `{ "ok": true, "data": { "customerId": "C-88", "name": "Ada Lovelace",
   "tool": "createOrder",
   "sessionId": "a3f9c1e2-0000-0000-0000-000000000001",
   "params": {
-    "customerId": "C-88",
-    "items": [{ "sku": "VAS-01", "qty": 2 }],
-    "shipTo": { "city": "London", "postcode": "N1 9GU" }
+    "customerName": "Sarah",
+    "items": [{ "name": "Resistance Band", "quantity": 2 }]
   }
 }
 ```
 
-Response: `{ "ok": true, "data": { "orderId": "ORD-5520", "total": "84.50 GBP" } }`
+Response: `{ "ok": true, "data": { "orderId": "ORD-5530", "member": "Sarah", "items": [{ "name": "Resistance Band", "quantity": 2 }], "total": "59.00 GBP", "status": "processing" } }`
+
+### checkInventory → `POST /webhook/voice-agent/check-inventory`
+
+```json
+{
+  "tool": "checkInventory",
+  "sessionId": "a3f9c1e2-0000-0000-0000-000000000001",
+  "params": { "productName": "Kettlebell 16kg" }
+}
+```
+
+Response: `{ "ok": true, "data": { "item": "Kettlebell 16kg", "available": 5, "inStock": true, "location": "Gym Floor" } }`
 
 ### sendEmail → `POST /webhook/voice-agent/send-email`
 
@@ -132,11 +146,11 @@ Response: `{ "ok": true, "data": { "orderId": "ORD-5520", "total": "84.50 GBP" }
 {
   "tool": "sendEmail",
   "sessionId": "a3f9c1e2-0000-0000-0000-000000000001",
-  "params": { "to": "ada@example.com", "subject": "Appointment confirmed", "body": "See you 2026-08-03 at 14:30." }
+  "params": { "to": "sarah@example.com", "subject": "Booking confirmed" }
 }
 ```
 
-Response: `{ "ok": true, "data": { "messageId": "MSG-7" } }`
+Response: `{ "ok": true, "data": { "messageId": "MSG-7536", "to": "sarah@example.com", "subject": "Booking confirmed", "status": "sent" } }`
 
 ## Adding a new tool
 

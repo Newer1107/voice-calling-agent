@@ -33,16 +33,17 @@ class WebhookTool:
         self.settings = settings
         self.name = "webhook_tool"
         self.description = (
-            "Perform actions and lookups by calling an n8n workflow: book an appointment, "
-            "create an order, look up a customer, check inventory, or send an email. "
-            "Pass the workflow name in 'tool' and its parameters in 'params'."
+            "Perform actions and lookups at a gym by calling an n8n workflow: book a gym "
+            "session, order gym merchandise, look up a member, check equipment availability, "
+            "or send a confirmation email. Pass the workflow name in 'tool' and its "
+            "parameters in 'params'."
         )
         self._n8n = N8NClient(settings)
         self._tools: dict[str, dict[str, Any]] = {
-            "bookAppointment": {"path": "/book-appointment", "description": "Book an appointment. Params: date (ISO date), time (HH:MM), customerName, notes (optional)."},
-            "createOrder": {"path": "/create-order", "description": "Create an order. Params: customerName, items (list of {name, quantity}), notes (optional)."},
-            "lookupCustomer": {"path": "/lookup-customer", "description": "Look up a customer by name or email. Params: name or email."},
-            "checkInventory": {"path": "/check-inventory", "description": "Check product availability. Params: productName or productId."},
+            "bookAppointment": {"path": "/book-appointment", "description": "Book a gym session. Params: customerName, session (class name), date (ISO date), time (HH:MM)."},
+            "createOrder": {"path": "/create-order", "description": "Order gym merchandise. Params: customerName, items (list of {name, quantity})."},
+            "lookupCustomer": {"path": "/lookup-customer", "description": "Look up a gym member by name or email. Params: name or email."},
+            "checkInventory": {"path": "/check-inventory", "description": "Check gym equipment availability. Params: productName or productId."},
             "sendEmail": {"path": "/send-email", "description": "Send an email. Params: to, subject, body."},
         }
 
