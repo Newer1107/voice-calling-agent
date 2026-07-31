@@ -10,6 +10,12 @@ Browser → LiveKit Cloud → Python Agent (Home Server)
         → Edge TTS (en-IN, Kokoro fallback) → LiveKit Cloud → Browser
 ```
 
+There is a second, separate browser experience: the **Realtime Business
+Dashboard** (`/dashboard`), a live control panel for the business owner. While
+customers talk to the agent, the owner watches conversations, appointments,
+orders, customers and system health update in real time over WebSocket —
+no refresh. See [Realtime business dashboard](#realtime-business-dashboard).
+
 ## Components
 
 The system is built for a distributed setup with three components. Clone the
@@ -32,7 +38,7 @@ The orchestration server. Runs the entire conversation pipeline:
 
 | Folder | Purpose |
 |---|---|
-| `agent/` | Python LiveKit agent: session orchestration, FastAPI helper (token + history), clients (Whisper, Ollama, Kokoro, n8n), tool manager |
+| `agent/` | Python LiveKit agent: session orchestration, FastAPI helper (token + history + dashboard API), clients (Whisper, Ollama, Kokoro, n8n), tool manager, dashboard module (event hub + PostgreSQL persistence) |
 | `shared/` | Cross-module contracts the agent consumes |
 
 Also hosts (already installed, not recreated): **n8n**, **PostgreSQL**,
@@ -64,14 +70,24 @@ flowchart TB
     end
 
     subgraph HS["Home Server — Python Agent"]
-        API["FastAPI helper<br/>POST /token · GET /history · GET /health"]
+        API["FastAPI helper<br/>POST /token · GET /history ·<br/>/dashboard/* REST · /ws/dashboard"]
         SESS["VoiceSession<br/>turn orchestration · PTT/VAD gating"]
         EV["EventPublisher<br/>data-channel envelopes"]
-        TM["ToolManager<br/>8 webhook tools"]
+        HUB["DashboardHub<br/>event hub (pub/sub)"]
+        DPG["DashboardDB<br/>(asyncpg persistence)"]
+        TM["ToolManager<br/>9 webhook tools"]
         STT["Faster-Whisper<br/>local STT"]
         OCL["OllamaClient"]
         TCL["TTSClient"]
         MEM["ConversationManager<br/>session memory"]
+    end
+
+    subgraph DASH["Browser — Business Dashboard (Next.js)"]
+        DB["/dashboard · 8 pages<br/>Overview · Live · History ·<br/>Appointments · Orders ·<br/>Customers · Analytics · System"]
+    end
+
+    subgraph PG["Home Server — PostgreSQL"]
+        PGD[(voice_dashboard<br/>conversations · customers ·<br/>appointments · orders · tools)]
     end
 
     subgraph AI["AI Server — Ollama"]
@@ -121,6 +137,12 @@ flowchart TB
     TCL -->|"audio frames"| SESS
     SESS -->|"playback"| ROOM
     ROOM -->|"audio"| SPK
+
+    SESS -->|"domain events<br/>conversation.* · tool.* ·<br/>customer.loaded ·<br/>appointment/order.created"| HUB
+    SESS -->|"persist"| DPG
+    HUB -->|"live events (wss /ws/dashboard)"| DB
+    API -->|"/dashboard/* REST"| DPG
+    DPG <--> PGD
 ```
 
 The browser never communicates directly with Ollama, Whisper, the TTS engine,
@@ -208,6 +230,50 @@ sequenceDiagram
    name) in `ConversationManager`; history is retrievable via
    `GET /history/{sessionId}`.
 
+## Realtime business dashboard
+
+The dashboard is the **business owner's control panel**, not the customer's.
+It lives in the same Next.js app at `/dashboard` and updates **live** from the
+agent over WebSocket — every call, booking, order and customer profile appears
+as it happens, with no page refresh. It looks like a commercial AI receptionist
+platform (dark graphite, blue accent, animated charts).
+
+### Pages
+
+| Page | What it shows |
+|---|---|
+| `/dashboard` (Overview) | Active conversations, calls/appointments/orders today, revenue (mock), average call duration, AI success rate, failed tool calls — each card with a mini animated chart |
+| `/dashboard/conversations` (Live) | Every active call as a card: customer, live transcript, last AI reply, ticking duration, speaking/listening state, current tool executing |
+| `/dashboard/history` | Conversation table (time, customer, duration, summary, outcome, tools); click a row for the full detail — transcript timeline, tool calls with args/results/latency |
+| `/dashboard/appointments` | Upcoming appointments with search + filter |
+| `/dashboard/orders` | Order ID, customer, items, status, total |
+| `/dashboard/customers` | Name, membership tier, visits, last visit, lifetime value (mock), upcoming booking; click for profile |
+| `/dashboard/analytics` | Charts: calls/appointments/orders per day, tool usage, conversation duration, customer satisfaction, peak hours |
+| `/dashboard/system` | Health of LiveKit, Ollama, Whisper, TTS (Kokoro), n8n — green/yellow/red, auto-refreshing |
+
+### Realtime events
+
+The agent broadcasts every stage of a conversation over `/ws/dashboard`:
+
+```
+conversation.started → transcript.updated → customer.loaded
+→ tool.started → tool.finished → appointment.created / order.created
+→ conversation.finished · system.status (every 30s)
+```
+
+A `snapshot` frame (overview + system health) is sent on connect; the browser
+reconnects automatically with backoff and re-syncs REST data.
+
+### API
+
+- `GET /dashboard/overview | conversations | conversations/{id} | appointments | orders | customers | analytics | system`
+- `WS /ws/dashboard` (also proxied as `wss://…/agent/ws/dashboard`)
+
+Data is persisted to PostgreSQL (`voice_dashboard` database — see
+`agent/.env`: `DASHBOARD_DATABASE_URL`, `ENABLE_DASHBOARD`). The agent's
+`voice_agent/dashboard/` module owns the schema, the event hub, and the API;
+the session pipeline emits domain events and the store records them.
+
 ## Demo guide: what you can ask the voice agent
 
 The agent is **Maya**, the IronPeak Fitness receptionist. Everything below works
@@ -262,6 +328,10 @@ Run this top to bottom in front of a client:
   emailed automatically.
 - **Honest AI** — graceful "I can't do that" handling instead of hallucinated
   success, and a real-time voice pipeline (STT → LLM → business logic → TTS).
+- **Live visibility** — while the customer talks, open `/dashboard` on a second
+  screen: the call appears instantly with its transcript, the tool execution
+  cards light up, and the appointment/order/customer records land in real time.
+  This is the "receptionist's control panel" moment for the owner.
 
 ### Demo tips
 
@@ -273,12 +343,15 @@ Run this top to bottom in front of a client:
   hook), **Sarah** (Silver, 31 days, 2 upcoming bookings), **Alice** (Gold,
   25 days).
 - Keep each utterance to one or two requests for maximum reliability.
+- Run the demo with **two screens**: the voice console on one, `/dashboard`
+  (Overview → Live Conversations → History) on the other — the owner watches
+  every call, booking and customer land live.
 
 ## Repository layout
 
 | Folder | Used by | What it is |
 |---|---|---|
-| `frontend/` | any machine with a browser / dev host | Next.js voice console (README inside) |
+| `frontend/` | any machine with a browser / dev host | Next.js app: voice console (`/`) + business dashboard (`/dashboard`) |
 | `livekit/` | reference only | LiveKit Cloud connection values (README inside) |
 | `agent/` | Home Server | Python agent + FastAPI helper (README inside) |
 | `shared/` | Home Server (via agent); referenced by frontend | Canonical contracts: `schemas/`, `contracts/`, `types/`, `configuration/env-conventions.md` |
@@ -298,16 +371,21 @@ Run this top to bottom in front of a client:
    `curl http://192.168.x.x:11434/v1/models` from the Home Server; set
    `OLLAMA_BASE_URL` to that LAN address in `agent/.env`.
 5. **Start the frontend** (`cd frontend` → follow `frontend/README.md`):
-   `npm install`, `npm run build`, `npm run start`.
+   `npm install`, `npm run build`, `npm run start`. The console is at `/`, the
+   business dashboard at `/dashboard`.
 6. **Open the application in the browser**, press Connect, and verify the
    full conversation flow (transcript, tool calls, audio reply).
+7. **Dashboard persistence** (optional but recommended): ensure PostgreSQL is
+   reachable at `DASHBOARD_DATABASE_URL` — the agent creates the schema
+   automatically. Without it the agent still runs; only the dashboard data
+   store is unavailable.
 
 ## Configuration
 
 Environment variables are **separated by component** — never mixed:
 
 - `frontend/.env.example` — browser-side URLs
-- `agent/.env.example` — LiveKit Cloud, Ollama (LAN), Whisper, Kokoro, n8n webhooks, logging
+- `agent/.env.example` — LiveKit Cloud, Ollama (LAN), Whisper, Kokoro, n8n webhooks, dashboard (Postgres), logging
 - `livekit/.env.example` — LiveKit Cloud connection values shared with the other two
 
 Canonical names and defaults: `shared/configuration/env-conventions.md`.
