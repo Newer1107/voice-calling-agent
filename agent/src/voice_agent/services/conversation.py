@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from .logging_config import get_logger
+from ..logging_config import get_logger
 
 logger = get_logger("conversation")
 
