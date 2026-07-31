@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import uuid
 from collections import deque
 from typing import Any
@@ -22,9 +23,7 @@ import numpy as np
 from ..clients.base import (
     LLMClient,
     LLMError,
-    LLMStreamEvent,
     LLMTextDelta,
-    LLMToolCalls,
     SpeechEvent,
     STTClient,
     ToolCall,
@@ -43,6 +42,8 @@ WELCOME_MESSAGE = "Hello! I'm your AI voice assistant. How can I help you today?
 MAX_TOOL_ROUNDS = 3              # tool-call rounds before the model must answer plainly
 TTS_TARGET_SAMPLE_RATE = 24000   # Kokoro native rate; all clips resampled to it
 FRAME_CHUNK_MS = 40              # output frames pushed at 40ms granularity
+# Sentence delimiters for sentence-streamed TTS (trailing whitespace consumed).
+_SENTENCE_END = re.compile(r"[.!?…]\s*")
 
 
 def tool_calls_to_wire(tool_calls: list[ToolCall]) -> list[dict[str, Any]]:
@@ -115,6 +116,7 @@ class VoiceSession:
         self._turn_lock = asyncio.Lock()
         self._play_lock = asyncio.Lock()  # serializes TTS playback across concurrent turns
         self._pending_finals: deque[str] = deque()
+        self._sentence_buf: list[str] = []
         self._closed = False
         self._ptt_active = False
         self._vad_enabled = settings.vad_enabled
@@ -204,14 +206,13 @@ class VoiceSession:
             await self._run_turn(self._pending_finals.popleft())
 
     async def _run_turn(self, text: str) -> None:
-        """One agent turn: think under the lock, then speak outside it."""
-        final_text: str | None = None
+        """One agent turn: think under the lock; TTS plays inside _agent_loop."""
         async with self._turn_lock:
             await self._events.state_thinking(self.session_id, active=True)
             await self._events.state_listening(self.session_id, active=False)
             await self._conversations.add_message(self.session_id, ConversationMessage(role="user", content=text))
             try:
-                final_text = await self._agent_loop()
+                await self._agent_loop()
             except LLMError as exc:
                 logger.error("llm failed", extra={"event": "llm_failed", "session_id": self.session_id, "error": str(exc)})
                 await self._events.error(self.session_id, "llm_failed", str(exc), recoverable=True)
@@ -221,18 +222,17 @@ class VoiceSession:
             finally:
                 if not self._closed:
                     await self._events.state_thinking(self.session_id, active=False)
-        # 11: speak outside _turn_lock so the next user turn can start while
-        # audio plays; listening is restored only after playback completes.
-        if final_text:
-            await self._speak(final_text)
         if not self._closed:
             await self._events.state_listening(self.session_id, active=True, source="vad" if self._vad_enabled else "ptt")
 
     async def _agent_loop(self) -> str | None:
         """LLM with tool calling; returns the assistant's final text (or None).
 
-        Streams text deltas as agent.message.* events; tool calls are
-        executed and their results fed back, up to MAX_TOOL_ROUNDS rounds.
+        Tool-capable rounds use the non-streaming completion so a tool call
+        the model writes as JSON text is converted (clients/ollama.py) and
+        executed instead of spoken. The final answer streams, and complete
+        sentences are spoken as they arrive (sentence-streamed TTS) so audio
+        starts before the model finishes.
         """
         history = await self._conversations.history_for_llm(self.session_id)
         message_id = uuid.uuid4().hex
@@ -247,22 +247,37 @@ class VoiceSession:
                 await self._events.message_start(self.session_id, message_id)
             await self._events.message_delta(self.session_id, message_id, delta)
 
-        for _ in range(MAX_TOOL_ROUNDS):
-            tool_calls = await self._stream_round(history, tools=self._tools.schemas(), on_delta=on_delta)
-            if not tool_calls:
-                break
-            await self._conversations.add_message(
-                self.session_id,
-                ConversationMessage(role="assistant", content="", tool_calls=tool_calls_to_wire(tool_calls)),
-            )
-            history.append({"role": "assistant", "content": "", "tool_calls": tool_calls_to_wire(tool_calls)})
-            for call in tool_calls:
-                summary = await self._execute_tool(call)
-                history.append({"role": "tool", "tool_call_id": call.id, "content": summary})
-        else:
-            # Cap reached with tool calls only: force a plain text answer.
-            if not emitted:
-                await self._stream_round(history, tools=None, on_delta=on_delta)
+        tts_queue: asyncio.Queue[str | None] = asyncio.Queue()
+        tts_task = asyncio.create_task(self._tts_player(tts_queue))
+
+        async def on_final_delta(delta: str) -> None:
+            await on_delta(delta)
+            await self._queue_sentences(tts_queue, delta)
+
+        try:
+            for _ in range(MAX_TOOL_ROUNDS):
+                response = await self._llm.complete(history, tools=self._tools.schemas())
+                if not response.tool_calls:
+                    if response.content:
+                        await on_final_delta(response.content)
+                    break
+                await self._conversations.add_message(
+                    self.session_id,
+                    ConversationMessage(role="assistant", content="", tool_calls=tool_calls_to_wire(response.tool_calls)),
+                )
+                history.append({"role": "assistant", "content": "", "tool_calls": tool_calls_to_wire(response.tool_calls)})
+                for call in response.tool_calls:
+                    summary = await self._execute_tool(call)
+                    history.append({"role": "tool", "tool_call_id": call.id, "content": summary})
+            else:
+                # Cap reached with tool calls only: force a plain-text answer.
+                if not emitted:
+                    async for event in self._llm.stream(history, tools=None):
+                        if isinstance(event, LLMTextDelta):
+                            await on_final_delta(event.text)
+        finally:
+            await tts_queue.put(None)
+            await tts_task
 
         if not emitted:
             return None
@@ -272,42 +287,27 @@ class VoiceSession:
             await self._conversations.add_message(self.session_id, ConversationMessage(role="assistant", content=text))
         return text or None
 
-    async def _stream_round(
-        self,
-        history: list[dict[str, Any]],
-        *,
-        tools: list[dict[str, Any]] | None,
-        on_delta: Any,
-    ) -> list[ToolCall] | None:
-        """One LLM round: stream deltas; return tool calls when requested.
+    async def _queue_sentences(self, tts_queue: asyncio.Queue[str | None], delta: str) -> None:
+        """Split incoming text into sentences and queue them for TTS playback."""
+        self._sentence_buf.append(delta)
+        while True:
+            joined = "".join(self._sentence_buf)
+            match = _SENTENCE_END.search(joined)
+            if match is None:
+                break
+            index = match.end()
+            sentence = joined[:index].strip()
+            self._sentence_buf = [joined[index:]]
+            if sentence:
+                await tts_queue.put(sentence)
 
-        Falls back to a non-streaming completion when streaming fails before
-        producing content (the completion path applies its own retries).
-        """
-        try:
-            tool_calls: list[ToolCall] | None = None
-            emitted_any = False
-
-            async def _on_delta(delta: str) -> None:
-                nonlocal emitted_any
-                emitted_any = True
-                await on_delta(delta)
-
-            async for event in self._llm.stream(history, tools=tools):
-                if isinstance(event, LLMTextDelta):
-                    await _on_delta(event.text)
-                elif isinstance(event, LLMToolCalls):
-                    tool_calls = event.tool_calls
-            return tool_calls
-        except LLMError as exc:
-            # 9: never run the completion fallback after text was already emitted
-            if not exc.retryable or emitted_any:
-                raise
-            logger.warning("streaming failed, falling back to completion", extra={"event": "llm_stream_fallback", "session_id": self.session_id, "error": str(exc)})
-            response = await self._llm.complete(history, tools=tools)
-            if response.content:
-                await on_delta(response.content)
-            return response.tool_calls or None
+    async def _tts_player(self, tts_queue: asyncio.Queue[str | None]) -> None:
+        """Consume sentences and speak them in order (None = stop)."""
+        while True:
+            sentence = await tts_queue.get()
+            if sentence is None:
+                return
+            await self._speak(sentence)
 
     async def _execute_tool(self, call: ToolCall) -> str:
         """Execute one tool call; publish result/error events; return the LLM-facing summary."""

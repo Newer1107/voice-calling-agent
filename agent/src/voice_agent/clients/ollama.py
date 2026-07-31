@@ -28,6 +28,31 @@ def _status_retryable(status: int) -> bool:
     return status >= 500 or status in (408, 429)
 
 
+def _tool_call_from_text(content: str) -> ToolCall | None:
+    """Detect a tool call the model wrote as plain JSON text.
+
+    llama3.1 occasionally emits ``{"name": "lookupCustomer", "parameters":
+    {...}}`` in ``content`` instead of a structured ``tool_calls`` field.
+    Convert it so the session executes the tool instead of speaking the JSON.
+    """
+    text = content.strip().strip("`")
+    if text.startswith("json"):
+        text = text[4:].strip()
+    try:
+        obj = json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(obj, dict):
+        return None
+    name = obj.get("name")
+    parameters = obj.get("parameters") or obj.get("arguments")
+    if isinstance(name, str) and isinstance(parameters, dict):
+        return ToolCall(id="text_call", name=name, arguments=parameters)
+    if isinstance(obj.get("tool"), str) and isinstance(obj.get("params"), dict):
+        return ToolCall(id="text_call", name=obj["tool"], arguments=obj["params"])
+    return None
+
+
 class OllamaClient:
     """OpenAI-compatible client for Ollama's chat endpoint."""
 
@@ -128,6 +153,11 @@ class OllamaClient:
                     data = response.json()
                     message = data.get("choices", [{}])[0].get("message", {})
                     tool_calls = [self._parse_tool_call(tc, idx) for idx, tc in enumerate(message.get("tool_calls") or [])]
+                    if not tool_calls:
+                        content = message.get("content") or ""
+                        text_call = _tool_call_from_text(content)
+                        if text_call is not None:
+                            return LLMResponse(content="", tool_calls=[text_call])
                     return LLMResponse(content=message.get("content") or "", tool_calls=tool_calls)
             except (httpx.TimeoutException, httpx.HTTPError) as exc:
                 error = LLMError(f"ollama request failed: {exc}")

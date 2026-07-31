@@ -57,9 +57,9 @@ class ToolManager:
     @classmethod
     def from_settings(cls, settings: Settings) -> "ToolManager":
         """Build the default registry from the configured webhook base URL."""
-        from .webhook_tool import WebhookTool  # deferred: breaks manager<->webhook_tool cycle
+        from .webhook_tool import build_default_tools  # deferred: breaks manager<->webhook_tool cycle
 
-        return cls([WebhookTool(settings)])
+        return cls(build_default_tools(settings))
 
     def schemas(self) -> list[dict[str, Any]]:
         """OpenAI function schemas for all registered tools."""

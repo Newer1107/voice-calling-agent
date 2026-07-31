@@ -1,6 +1,6 @@
-"""Webhook-backed tool: POSTs to n8n workflows per shared/contracts/webhook.md.
+"""Webhook-backed tools: one OpenAI function per n8n workflow.
 
-Request envelope: ``POST {N8N_WEBHOOK_BASE_URL}/{tool path}`` with JSON body
+Request envelope: ``POST {N8N_WEBHOOK_BASE_URL}/{path}`` with JSON body
 ``{"tool": <name>, "sessionId": <session id>, "params": <args>}``.
 
 Response envelope: ``{"ok": bool, "data"?: any, "error"?: string}``.
@@ -27,54 +27,39 @@ logger = get_logger("tools.webhook")
 
 
 class WebhookTool:
-    """The five default n8n tools, all funneled through webhooks."""
+    """One n8n-webhook-backed tool: a single OpenAI function schema."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        name: str,
+        description: str,
+        parameters: dict[str, Any],
+        path: str,
+    ) -> None:
         self.settings = settings
-        self.name = "webhook_tool"
-        self.description = (
-            "Perform actions and lookups at a gym by calling an n8n workflow: book a gym "
-            "session, order gym merchandise, look up a member, check equipment availability, "
-            "or send a confirmation email. Pass the workflow name in 'tool' and its "
-            "parameters in 'params'."
-        )
+        self.name = name
+        self.description = description
+        self._parameters = parameters
+        self._path = path
         self._n8n = N8NClient(settings)
-        self._tools: dict[str, dict[str, Any]] = {
-            "bookAppointment": {"path": "/book-appointment", "description": "Book a gym session. Params: customerName, session (class name), date (ISO date), time (HH:MM)."},
-            "createOrder": {"path": "/create-order", "description": "Order gym merchandise. Params: customerName, items (list of {name, quantity})."},
-            "lookupCustomer": {"path": "/lookup-customer", "description": "Look up a gym member by name or email. Params: name or email."},
-            "checkInventory": {"path": "/check-inventory", "description": "Check gym equipment availability. Params: productName or productId."},
-            "sendEmail": {"path": "/send-email", "description": "Send an email. Params: to, subject, body."},
-        }
 
-    # -- Tool protocol -------------------------------------------------------
     def schema(self) -> dict[str, Any]:
-        """OpenAI function schema exposing the five webhook tools."""
-        properties: dict[str, Any] = {}
-        for name, spec in self._tools.items():
-            properties[name] = {"type": "object", "description": spec["description"]}
+        """OpenAI function schema for this single tool."""
         return {
             "type": "function",
             "function": {
                 "name": self.name,
                 "description": self.description,
-                "parameters": {
-                    "type": "object",
-                    "properties": properties,
-                    "required": ["tool"],
-                },
+                "parameters": self._parameters,
             },
         }
 
     async def execute(self, args: dict[str, Any], session_id: str) -> ToolResult:
-        """Dispatch to the requested n8n workflow (never raises)."""
-        tool_name = args.get("tool")
-        spec = self._tools.get(tool_name)
-        if spec is None:
-            return ToolResult(ok=False, summary=f"Unknown workflow '{tool_name}'", error=f"unknown workflow: {tool_name}")
-        params = args.get("params") or {}
-        envelope = {"tool": tool_name, "sessionId": session_id, "params": params}
-        url = f"{self.settings.n8n_webhook_base_url.rstrip('/')}{spec['path']}"
+        """POST the args to the n8n workflow (never raises)."""
+        params = args or {}
+        envelope = {"tool": self.name, "sessionId": session_id, "params": params}
+        url = f"{self.settings.n8n_webhook_base_url.rstrip('/')}{self._path}"
         try:
             data = await self._n8n.post(url, envelope)
         except WebhookToolError as exc:
@@ -86,3 +71,105 @@ class WebhookTool:
 
     async def aclose(self) -> None:
         await self._n8n.aclose()
+
+
+def build_default_tools(settings: Settings) -> list[WebhookTool]:
+    """The five default gym tools, one OpenAI function per n8n workflow."""
+    return [
+        WebhookTool(
+            settings,
+            name="bookAppointment",
+            description=(
+                "Book a gym session for a member. Call when the user wants to book, reserve, "
+                "or schedule a class or personal training session."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "customerName": {"type": "string", "description": "Member's name"},
+                    "session": {"type": "string", "description": "Class or session name, e.g. Yoga Basics"},
+                    "date": {"type": "string", "description": "Date in ISO format, e.g. 2026-08-05"},
+                    "time": {"type": "string", "description": "Time in 24h HH:MM, e.g. 18:30"},
+                },
+                "required": ["customerName", "session", "date", "time"],
+            },
+            path="/book-appointment",
+        ),
+        WebhookTool(
+            settings,
+            name="createOrder",
+            description=(
+                "Order gym merchandise (shirts, resistance bands, protein shakes, etc.). "
+                "Call when the user wants to buy or order gym products."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "customerName": {"type": "string", "description": "Member's name"},
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string", "description": "Product name"},
+                                "quantity": {"type": "integer", "description": "How many"},
+                            },
+                            "required": ["name", "quantity"],
+                        },
+                        "description": "Items to order",
+                    },
+                },
+                "required": ["customerName", "items"],
+            },
+            path="/create-order",
+        ),
+        WebhookTool(
+            settings,
+            name="lookupCustomer",
+            description=(
+                "Look up a gym member's account (membership tier, status, visits). "
+                "Call when the user asks about their membership, plan, tier, or account details."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Member name"},
+                    "email": {"type": "string", "description": "Member email"},
+                },
+                "description": "Provide at least one of name or email",
+            },
+            path="/lookup-customer",
+        ),
+        WebhookTool(
+            settings,
+            name="checkInventory",
+            description=(
+                "Check whether gym equipment or merchandise is in stock. "
+                "Call when the user asks about availability of a product or equipment."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "productName": {"type": "string", "description": "Product or equipment name"},
+                    "productId": {"type": "string", "description": "Product id if known"},
+                },
+                "description": "Provide at least one of productName or productId",
+            },
+            path="/check-inventory",
+        ),
+        WebhookTool(
+            settings,
+            name="sendEmail",
+            description="Send an email. Call when the user wants to send, email, or message someone.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "to": {"type": "string", "description": "Recipient email"},
+                    "subject": {"type": "string", "description": "Email subject"},
+                    "body": {"type": "string", "description": "Email body"},
+                },
+                "required": ["to", "subject", "body"],
+            },
+            path="/send-email",
+        ),
+    ]
