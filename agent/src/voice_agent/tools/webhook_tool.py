@@ -74,7 +74,7 @@ class WebhookTool:
 
 
 def build_default_tools(settings: Settings) -> list[WebhookTool]:
-    """The five default gym tools, one OpenAI function per n8n workflow."""
+    """The seven default gym tools, one OpenAI function per n8n workflow."""
     return [
         WebhookTool(
             settings,
@@ -94,6 +94,62 @@ def build_default_tools(settings: Settings) -> list[WebhookTool]:
                 "required": ["customerName", "session"],
             },
             path="/book-appointment",
+        ),
+        WebhookTool(
+            settings,
+            name="bookSpaAppointment",
+            description=(
+                "Book a spa treatment at the gym spa (Swedish massage, deep tissue massage, "
+                "sauna session, aromatherapy facial, hot stone therapy). Call when the user "
+                "wants to book, reserve, or schedule any spa, massage, sauna, or facial."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "customerName": {"type": "string", "description": "Member's name"},
+                    "service": {"type": "string", "description": "Spa treatment name, e.g. Swedish Massage"},
+                    "date": {"type": "string", "description": "Date in ISO format, e.g. 2026-08-05. Omit and n8n defaults to today."},
+                    "time": {"type": "string", "description": "Time in 24h HH:MM, e.g. 16:00. Omit and n8n defaults to 16:00."},
+                },
+                "required": ["customerName", "service"],
+            },
+            path="/book-spa-appointment",
+        ),
+        WebhookTool(
+            settings,
+            name="getMembership",
+            description=(
+                "Get a member's membership details: tier, status, expiry date, days remaining "
+                "and renewal price. Call whenever a member gives their name or asks about their "
+                "membership, plan, tier, expiry, renewal, or when it runs out."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Member name"},
+                    "email": {"type": "string", "description": "Member email"},
+                },
+                "description": "Provide at least one of name or email",
+            },
+            path="/get-membership",
+        ),
+        WebhookTool(
+            settings,
+            name="upgradeMembership",
+            description=(
+                "Upgrade a member's gym membership to a higher tier (Gold or Platinum). "
+                "Call when the user wants to upgrade, change, or switch their membership plan "
+                "or tier. Never claim an upgrade succeeded without calling this tool."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "customerName": {"type": "string", "description": "Member's name"},
+                    "tier": {"type": "string", "description": "Target tier: Gold or Platinum"},
+                },
+                "required": ["customerName", "tier"],
+            },
+            path="/upgrade-membership",
         ),
         WebhookTool(
             settings,

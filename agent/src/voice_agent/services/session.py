@@ -38,12 +38,23 @@ from .conversation import ConversationManager, ConversationMessage
 
 logger = get_logger("session")
 
-WELCOME_MESSAGE = "Hello! I'm your AI voice assistant. How can I help you today?"
+WELCOME_MESSAGE = (
+    "Hello, and welcome to IronPeak Fitness! I'm Maya, your receptionist. "
+    "May I have your name, please?"
+)
 MAX_TOOL_ROUNDS = 3              # tool-call rounds before the model must answer plainly
 TTS_TARGET_SAMPLE_RATE = 24000   # Kokoro native rate; all clips resampled to it
 FRAME_CHUNK_MS = 40              # output frames pushed at 40ms granularity
 # Sentence delimiters for sentence-streamed TTS (trailing whitespace consumed).
 _SENTENCE_END = re.compile(r"[.!?…]\s*")
+# Markdown/formatting leaks (**, bullets, backticks) must never reach the
+# transcript or the TTS — they'd be read aloud as gibberish.
+_MARKDOWN = re.compile(r"[\*`]|^\s*(?:[-•]|#+)\s*", re.MULTILINE)
+
+
+def sanitize_spoken_text(text: str) -> str:
+    """Strip markdown/formatting symbols so replies stay plain conversational text."""
+    return _MARKDOWN.sub("", text).strip()
 
 
 def tool_calls_to_wire(tool_calls: list[ToolCall]) -> list[dict[str, Any]]:
@@ -127,7 +138,12 @@ class VoiceSession:
         """Open the session: announce, capture input, listen for client messages."""
         await self._events.state_connected(self.session_id)
         await self._events.welcome(self.session_id, WELCOME_MESSAGE)
-        await self._events.state_listening(self.session_id, active=True, source="vad" if self._vad_enabled else "ptt")
+        # Not actually listening until PTT is held (or VAD is on) — report the real gate.
+        await self._events.state_listening(
+            self.session_id,
+            active=bool(self._vad_enabled),
+            source="vad" if self._vad_enabled else "ptt",
+        )
         self._events.start_listening()
         self._spawn(self._input_loop())
         self._spawn(self._inbound_loop())
@@ -223,7 +239,9 @@ class VoiceSession:
                 if not self._closed:
                     await self._events.state_thinking(self.session_id, active=False)
         if not self._closed:
-            await self._events.state_listening(self.session_id, active=True, source="vad" if self._vad_enabled else "ptt")
+            active = self._ptt_active or self._vad_enabled
+            source = "ptt" if self._ptt_active else ("vad" if self._vad_enabled else "ptt")
+            await self._events.state_listening(self.session_id, active=active, source=source)
 
     async def _agent_loop(self) -> str | None:
         """LLM with tool calling; returns the assistant's final text (or None).
@@ -251,6 +269,9 @@ class VoiceSession:
         tts_task = asyncio.create_task(self._tts_player(tts_queue))
 
         async def on_final_delta(delta: str) -> None:
+            delta = sanitize_spoken_text(delta)
+            if not delta:
+                return
             await on_delta(delta)
             await self._queue_sentences(tts_queue, delta)
 

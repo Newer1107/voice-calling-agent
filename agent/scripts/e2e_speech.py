@@ -12,6 +12,9 @@ import urllib.request
 import livekit.rtc as rtc
 
 ROOM = sys.argv[1] if len(sys.argv) > 1 else "e2e-speech"
+UTTERANCE = sys.argv[2] if len(sys.argv) > 2 else (
+    "I would like to book a yoga class tomorrow evening at six thirty for Sarah please"
+)
 
 
 def get_token(room: str) -> str:
@@ -49,7 +52,7 @@ def wav_to_pcm16(wav: bytes) -> tuple[bytes, int, int]:
 
 async def main() -> None:
     print("synthesizing user speech...", flush=True)
-    wav = synth("I would like to book a yoga class tomorrow evening at six thirty for Sarah please")
+    wav = synth(UTTERANCE)
     pcm, rate, channels = wav_to_pcm16(wav)
     print(f"user speech: {len(pcm)} bytes @ {rate}Hz {channels}ch", flush=True)
 
