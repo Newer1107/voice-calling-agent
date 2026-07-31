@@ -45,8 +45,12 @@ export class AgentApiError extends Error {
   }
 }
 
-function requireEnv(name: string): string {
-  const value = process.env[name];
+function requireEnv(name: "NEXT_PUBLIC_AGENT_API_URL" | "NEXT_PUBLIC_LIVEKIT_URL"): string {
+  // Route through the module constants above: they use static
+  // `process.env.NEXT_PUBLIC_*` references, which Next.js inlines at build
+  // time. A dynamic `process.env[name]` lookup is NOT inlined and evaluates
+  // to undefined in the browser, surfacing as a false "Missing ..." error.
+  const value = name === "NEXT_PUBLIC_AGENT_API_URL" ? AGENT_API_URL : LIVEKIT_URL;
   if (!value) {
     throw new AgentApiError(
       `Missing ${name}. Copy .env.example to .env and set it (see shared/configuration/env-conventions.md).`,
