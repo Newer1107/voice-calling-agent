@@ -3,91 +3,87 @@
 import { useState } from "react";
 
 import type { ConversationEntry } from "@/hooks/use-voice-agent";
+import { formatTime } from "@/lib/format";
 
 interface HistoryPanelProps {
   entries: ConversationEntry[];
-  sessionId: string;
+  sessionId: string | null;
 }
 
-function formatTime(timestamp: string): string {
-  if (!timestamp) return "";
-  const date = new Date(timestamp);
-  if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
+const ROLE_LABEL: Record<ConversationEntry["role"], string> = {
+  user: "You",
+  agent: "Assistant",
+};
 
 export function HistoryPanel({ entries, sessionId }: HistoryPanelProps) {
-  const [open, setOpen] = useState(false);
+  const [openId, setOpenId] = useState<string | null>(null);
 
   return (
-    <section className="panel" aria-label="Conversation history">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        aria-controls="history-content"
-        className="panel-header w-full text-left hover:bg-white/5"
-      >
-        <h2 className="panel-title">History</h2>
-        <span className="flex items-center gap-2">
-          {sessionId && (
-            <span className="hidden max-w-32 truncate font-mono text-[10px] text-slate-500 sm:inline">
-              {sessionId}
-            </span>
-          )}
-          <svg
-            className={`h-4 w-4 text-slate-400 transition-transform ${open ? "rotate-180" : ""}`}
-            viewBox="0 0 24 24"
-            fill="none"
-            aria-hidden="true"
-          >
-            <path
-              d="M6 9l6 6 6-6"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
-        </span>
-      </button>
+    <section
+      className="flex flex-col gap-4 rounded-2xl border border-line bg-graphite-900 p-7 shadow-[0_1px_0_rgba(255,255,255,0.02)_inset,0_16px_40px_-20px_rgba(0,0,0,0.6)]"
+      aria-label="Conversation history"
+    >
+      <div className="flex items-center justify-between">
+        <h2 className="section-title">History</h2>
+        <span className="text-[12px] text-ink-faint">{entries.length} entries</span>
+      </div>
 
-      {open && (
-        <div id="history-content" className="max-h-72 overflow-y-auto p-4">
-          {entries.length === 0 ? (
-            <p className="text-sm text-slate-500">
-              No history yet. Past sessions appear here once the agent serves
-              them from <span className="font-mono text-xs">/history</span>.
-            </p>
-          ) : (
-            <ol className="flex flex-col gap-2.5">
-              {entries.map((entry) => (
-                <li key={entry.id} className="flex items-start gap-2">
-                  <span
-                    className={`mt-0.5 flex h-4 w-9 flex-none items-center justify-center rounded text-[9px] font-bold uppercase tracking-wide ${
-                      entry.role === "user"
-                        ? "bg-brand-500/20 text-brand-300"
-                        : "bg-voice-500/20 text-voice-300"
-                    }`}
-                  >
-                    {entry.role}
+      {entries.length === 0 ? (
+        <p className="text-[12px] leading-relaxed text-ink-faint">
+          Past conversation turns land here after each session.
+        </p>
+      ) : (
+        <ol className="relative flex flex-col gap-1">
+          {entries.map((entry) => {
+            const open = openId === entry.id;
+            return (
+              <li key={entry.id} className="relative pl-5">
+                {/* Timeline spine + node */}
+                <span
+                  className="absolute bottom-0 left-[5px] top-0 w-px bg-line-strong"
+                  aria-hidden="true"
+                />
+                <span
+                  className={`absolute left-0 top-[7px] h-[11px] w-[11px] rounded-full border-2 ${
+                    open
+                      ? "border-accent bg-accent/30"
+                      : entry.role === "user"
+                        ? "border-graphite-500 bg-graphite-850"
+                        : "border-graphite-500 bg-graphite-800"
+                  }`}
+                  aria-hidden="true"
+                />
+                <button
+                  type="button"
+                  onClick={() => setOpenId(open ? null : entry.id)}
+                  aria-expanded={open}
+                  className="flex w-full items-baseline gap-2 rounded-md px-1 py-1 text-left transition-colors duration-150 hover:bg-white/[0.04]"
+                >
+                  <span className="w-16 flex-none text-[11px] text-ink-faint">
+                    {formatTime(entry.timestamp, true)}
                   </span>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-[13px] leading-snug text-slate-200">{entry.text}</p>
-                    <p className="mt-0.5 text-[10px] text-slate-600">
-                      {formatTime(entry.timestamp)}
-                      {entry.source === "history" && (
-                        <span className="ml-1.5 rounded border border-white/10 bg-white/5 px-1 text-[9px] uppercase tracking-wide text-slate-500">
-                          past
-                        </span>
-                      )}
-                    </p>
-                  </div>
-                </li>
-              ))}
-            </ol>
-          )}
-        </div>
+                  <span className="flex-1 truncate text-[13px]">
+                    <span className="mr-2 font-medium text-ink-low">
+                      {ROLE_LABEL[entry.role] ?? entry.role}
+                    </span>
+                    <span className="truncate text-ink-mid">{entry.text}</span>
+                  </span>
+                </button>
+                {open && (
+                  <p className="mb-2 mt-0.5 whitespace-pre-wrap break-words rounded-lg bg-graphite-850 px-3 py-2 text-[12px] leading-relaxed text-ink-mid">
+                    {entry.text}
+                  </p>
+                )}
+              </li>
+            );
+          })}
+        </ol>
+      )}
+
+      {sessionId && (
+        <p className="border-t border-line pt-3 font-mono text-[11px] text-ink-faint">
+          session {sessionId}
+        </p>
       )}
     </section>
   );

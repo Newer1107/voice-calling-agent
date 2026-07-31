@@ -47,6 +47,8 @@ export interface ToolActivityItem {
   status: ToolStatus;
   detail?: string;
   timestamp: string;
+  /** Round-trip latency computed client-side from call -> result timestamps. */
+  durationMs?: number;
 }
 
 export interface ErrorToast {
@@ -86,6 +88,13 @@ function formatArgsSummary(args: Record<string, unknown>): string {
   }
 }
 
+function computeDurationMs(callTimestamp: string, resultTimestamp: string): number | undefined {
+  const start = new Date(callTimestamp).getTime();
+  const end = new Date(resultTimestamp).getTime();
+  if (Number.isNaN(start) || Number.isNaN(end) || end < start) return undefined;
+  return end - start;
+}
+
 // ---------------------------------------------------------------------------
 // The hook
 // ---------------------------------------------------------------------------
@@ -101,7 +110,9 @@ export function useVoiceAgent() {
   const [speaking, setSpeaking] = useState(false);
   const [thinking, setThinking] = useState(false);
   const [pttHeld, setPttHeld] = useState(false);
-  const [vadEnabled, setVadEnabled] = useState(true);
+  // Push-to-talk is the default input mode: the agent only listens while the
+  // button/Space is held. VAD can be enabled for hands-free conversation.
+  const [vadEnabled, setVadEnabled] = useState(false);
 
   const [micEnabled, setMicEnabled] = useState(false);
   const [participants, setParticipants] = useState<ParticipantInfo[]>([]);
@@ -296,7 +307,13 @@ export function useVoiceAgent() {
             }
             const next = prev.slice();
             const item = next[index];
-            if (item) next[index] = { ...item, status: ok ? "ok" : "error", detail: summary };
+            if (item)
+              next[index] = {
+                ...item,
+                status: ok ? "ok" : "error",
+                detail: summary,
+                durationMs: computeDurationMs(item.timestamp, event.timestamp),
+              };
             return next;
           });
           break;
@@ -320,14 +337,28 @@ export function useVoiceAgent() {
             }
             const next = prev.slice();
             const item = next[index];
-            if (item) next[index] = { ...item, status: "error", detail: message };
+            if (item)
+              next[index] = {
+                ...item,
+                status: "error",
+                detail: message,
+                durationMs: computeDurationMs(item.timestamp, event.timestamp),
+              };
             return next;
           });
           break;
         }
         case "state.connected":
-          // Agent pipeline is ready — nothing to reset here (state.listening
-          // carries the listening flag).
+          // Agent pipeline is ready. The pre-connect client.config can be
+          // dropped (the agent's inbound loop isn't up yet), so (re)apply the
+          // VAD preference now that the session exists.
+          if (!vadEnabledRef.current) {
+            roomRef.current?.publishClientMessage(
+              "client.config",
+              { vadEnabled: false },
+              event.sessionId,
+            );
+          }
           break;
         case "state.listening": {
           setAgentListening({

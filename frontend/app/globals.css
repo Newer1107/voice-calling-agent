@@ -8,22 +8,20 @@
   }
 
   html {
-    scrollbar-color: rgb(51 65 85 / 0.8) transparent;
+    scrollbar-color: rgb(74 74 83 / 0.6) transparent;
   }
 
+  /* Flat graphite page — depth comes from surface elevation, not gradients. */
   body {
-    background-image:
-      radial-gradient(1100px 500px at 85% -10%, rgb(8 145 178 / 0.14), transparent 60%),
-      radial-gradient(900px 420px at -10% 110%, rgb(124 58 237 / 0.1), transparent 60%);
-    background-attachment: fixed;
+    background-color: #0d0d0f;
   }
 
   ::selection {
-    background-color: rgb(34 211 238 / 0.28);
+    background-color: rgb(59 130 246 / 0.28);
   }
 
   :focus-visible {
-    outline: 2px solid rgb(34 211 238 / 0.9);
+    outline: 1px solid rgb(59 130 246 / 0.55);
     outline-offset: 2px;
   }
 
@@ -33,53 +31,38 @@
 }
 
 @layer components {
-  /* Shared surface for every panel — the base of the console's visual system. */
-  .panel {
-    @apply rounded-xl border border-white/10 bg-slate-900/60 shadow-lg shadow-black/20 backdrop-blur-sm;
+  /* 13px uppercase section header — the workspace's structural typography. */
+  .section-title {
+    @apply text-[13px] font-semibold uppercase tracking-[0.08em] text-ink-low;
   }
 
-  .panel-header {
-    @apply flex items-center justify-between gap-3 border-b border-white/10 px-4 py-3;
+  /* Primary action — restrained accent, never glowing. */
+  .btn-accent {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-colors duration-150 hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40;
   }
 
-  .panel-title {
-    @apply text-xs font-semibold uppercase tracking-widest text-slate-400;
-  }
-
-  .label {
-    @apply text-xs font-medium text-slate-400;
-  }
-
-  /* Primary action (Connect) — brand cyan. */
-  .btn-primary {
-    @apply inline-flex items-center justify-center gap-2 rounded-lg bg-brand-500 px-4 py-2.5 text-sm font-semibold text-slate-950 transition-colors hover:bg-brand-400 disabled:cursor-not-allowed disabled:opacity-40;
-  }
-
-  /* Destructive action (Disconnect). */
-  .btn-danger {
-    @apply inline-flex items-center justify-center gap-2 rounded-lg border border-rose-500/40 bg-rose-500/10 px-4 py-2.5 text-sm font-semibold text-rose-300 transition-colors hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-40;
-  }
-
-  /* Neutral secondary button. */
+  /* Quiet secondary action. */
   .btn-ghost {
-    @apply inline-flex items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40;
+    @apply inline-flex items-center justify-center gap-2 rounded-lg border border-line bg-graphite-850 px-3 py-1.5 text-[13px] font-medium text-ink-mid transition-colors duration-150 hover:bg-graphite-800 hover:text-ink-high disabled:cursor-not-allowed disabled:opacity-40;
   }
 
-  /* Connection / state chips. */
-  .chip {
-    @apply inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium;
+  /* Tiny icon-only action (disconnect, dismiss, expand). */
+  .icon-btn {
+    @apply inline-flex h-7 w-7 flex-none items-center justify-center rounded-md text-ink-low transition-colors duration-150 hover:bg-white/[0.06] hover:text-ink-high disabled:cursor-not-allowed disabled:opacity-40;
   }
 
-  .chip-dot {
-    @apply h-2 w-2 rounded-full;
+  .kbd {
+    @apply rounded border border-line-strong bg-graphite-850 px-1.5 py-0.5 font-mono text-[10px] text-ink-mid;
   }
+}
 
-  /* Status LED for listening / speaking / thinking indicators. */
-  .led {
-    @apply inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium leading-none;
-  }
-
-  .led-on {
-    @apply animate-pulse-soft;
+/* Respect users who prefer reduced motion: kill decorative animation. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }

@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect } from "react";
+
 import type { ErrorToast } from "@/hooks/use-voice-agent";
 
 interface ErrorToastsProps {
@@ -7,63 +9,53 @@ interface ErrorToastsProps {
   onDismiss: (id: string) => void;
 }
 
-function formatTime(timestamp: string): string {
-  const date = new Date(timestamp);
-  if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-}
-
 export function ErrorToasts({ errors, onDismiss }: ErrorToastsProps) {
-  if (errors.length === 0) return null;
+  // Auto-dismiss non-fatal errors after 8s; fatal ones need explicit dismissal.
+  useEffect(() => {
+    if (errors.length === 0) return;
+    const timers = errors
+      .filter((err) => !err.fatal)
+      .map((err) => setTimeout(() => onDismiss(err.id), 8000));
+    return () => timers.forEach(clearTimeout);
+  }, [errors, onDismiss]);
 
   return (
     <div
-      className="pointer-events-none fixed right-4 top-4 z-50 flex w-full max-w-sm flex-col gap-2"
+      className="pointer-events-none fixed inset-x-0 bottom-6 z-50 flex flex-col items-center gap-2 px-6"
       role="status"
       aria-live="polite"
     >
-      {errors.map((error) => (
+      {errors.map((err) => (
         <div
-          key={error.id}
-          role={error.fatal ? "alert" : undefined}
-          className={`pointer-events-auto flex items-start gap-3 rounded-lg border px-4 py-3 shadow-xl shadow-black/30 backdrop-blur-sm ${
-            error.fatal
-              ? "border-rose-500/50 bg-rose-950/80 text-rose-100"
-              : "border-amber-500/40 bg-amber-950/80 text-amber-100"
-          }`}
+          key={err.id}
+          className="pointer-events-auto flex w-full max-w-md animate-slide-up items-start gap-3 rounded-xl border border-error/40 bg-graphite-850 px-4 py-3 shadow-[0_16px_40px_-12px_rgba(0,0,0,0.7)]"
         >
-          <div className="mt-0.5 flex h-5 w-5 flex-none items-center justify-center rounded-full border border-current text-[11px] font-bold">
-            !
-          </div>
+          <svg
+            className="mt-0.5 h-4 w-4 flex-none text-error"
+            viewBox="0 0 24 24"
+            fill="none"
+            aria-hidden="true"
+          >
+            <path
+              d="M12 8v5m0 3h.01M10.3 4.5 2.6 18a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 4.5a2 2 0 0 0-3.4 0Z"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
           <div className="min-w-0 flex-1">
-            <p className="flex flex-wrap items-baseline gap-x-2 text-sm font-semibold">
-              <span className="font-mono text-xs uppercase tracking-wide opacity-70">
-                {error.code}
-              </span>
-              <span className="text-xs text-white/50">
-                {formatTime(error.timestamp)}
-              </span>
-            </p>
-            <p className="mt-0.5 text-sm break-words text-white/85">{error.message}</p>
-            {error.fatal && (
-              <p className="mt-1 text-xs font-medium text-rose-300">
-                Connection lost — press Connect to try again.
-              </p>
-            )}
+            <p className="text-[13px] font-medium text-ink-high">{err.message}</p>
+            {err.code && <p className="mt-0.5 text-[11px] text-ink-faint">{err.code}</p>}
           </div>
           <button
             type="button"
-            onClick={() => onDismiss(error.id)}
-            aria-label={`Dismiss error: ${error.message}`}
-            className="flex-none rounded p-1 text-white/50 transition-colors hover:bg-white/10 hover:text-white"
+            onClick={() => onDismiss(err.id)}
+            aria-label="Dismiss"
+            className="icon-btn"
           >
-            <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <path
-                d="M6 6l12 12M18 6L6 18"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-              />
+            <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M6 6l12 12M18 6 6 18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
             </svg>
           </button>
         </div>

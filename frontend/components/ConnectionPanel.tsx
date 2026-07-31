@@ -1,104 +1,134 @@
 "use client";
 
-import { Spinner } from "@/components/Spinner";
+import { formatDuration, formatLatency } from "@/lib/format";
 import type { RoomStatus } from "@/lib/voice-room";
 
 interface ConnectionPanelProps {
   status: RoomStatus;
   errorDetail: string | null;
   livekitUrl: string | undefined;
+  sessionId: string | null;
+  sessionDuration: number;
+  micEnabled: boolean;
   onConnect: () => void;
   onDisconnect: () => void;
 }
 
-const STATUS_META: Record<RoomStatus, { label: string; classes: string; dot: string }> = {
-  disconnected: {
-    label: "Disconnected",
-    classes: "border-slate-600/60 bg-slate-800/60 text-slate-300",
-    dot: "bg-slate-400",
-  },
-  connecting: {
-    label: "Connecting…",
-    classes: "border-amber-500/40 bg-amber-500/10 text-amber-300",
-    dot: "bg-amber-400 animate-pulse-soft",
-  },
-  connected: {
-    label: "Connected",
-    classes: "border-emerald-500/40 bg-emerald-500/10 text-emerald-300",
-    dot: "bg-emerald-400",
-  },
-  reconnecting: {
-    label: "Reconnecting…",
-    classes: "border-amber-500/40 bg-amber-500/10 text-amber-300",
-    dot: "bg-amber-400 animate-pulse-soft",
-  },
-  error: {
-    label: "Error",
-    classes: "border-rose-500/50 bg-rose-500/10 text-rose-300",
-    dot: "bg-rose-400",
-  },
-};
+function Dot({ className }: { className?: string }) {
+  return <span className={`h-2 w-2 rounded-full ${className}`} aria-hidden="true" />;
+}
+
+function CopyButton({ text }: { text: string }) {
+  return (
+    <button
+      type="button"
+      onClick={() => navigator.clipboard.writeText(text)}
+      aria-label="Copy session ID"
+      title="Copy"
+      className="icon-btn !h-5 !w-5 text-ink-faint"
+    >
+      <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path
+          d="M8 8h12v12H8V8Zm0 0V4h12v4M4 4h4"
+          stroke="currentColor"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    </button>
+  );
+}
+
+function Row({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-4 text-[13px]">
+      <dt className="text-ink-low">{label}</dt>
+      <dd className="flex min-w-0 items-center gap-1.5 text-ink-mid">{children}</dd>
+    </div>
+  );
+}
 
 export function ConnectionPanel({
   status,
   errorDetail,
   livekitUrl,
+  sessionId,
+  sessionDuration,
+  micEnabled,
   onConnect,
   onDisconnect,
 }: ConnectionPanelProps) {
-  const busy = status === "connecting" || status === "reconnecting";
   const connected = status === "connected";
-  const meta = STATUS_META[status];
+  const busy = status === "connecting" || status === "reconnecting";
+
+  const tone =
+    status === "connected"
+      ? { label: "Connected", dot: "bg-success" }
+      : status === "error"
+        ? { label: "Error", dot: "bg-error" }
+        : status === "connecting" || status === "reconnecting"
+          ? { label: status === "connecting" ? "Connecting" : "Reconnecting", dot: "bg-warning animate-pulse-soft" }
+          : { label: "Disconnected", dot: "bg-ink-faint" };
 
   return (
-    <section className="panel" aria-label="Connection">
-      <div className="panel-header">
-        <h2 className="panel-title">Connection</h2>
-        <span className={`chip ${meta.classes}`}>
-          <span className={`chip-dot ${meta.dot}`} aria-hidden="true" />
-          {meta.label}
+    <section
+      className="flex flex-col gap-5 rounded-2xl border border-line bg-graphite-900 p-7 shadow-[0_1px_0_rgba(255,255,255,0.02)_inset,0_16px_40px_-20px_rgba(0,0,0,0.6)]"
+      aria-label="Connection status"
+    >
+      <div className="flex items-center justify-between">
+        <h2 className="section-title">Connection</h2>
+        <span className="flex items-center gap-2 text-[12px] font-medium text-ink-mid">
+          <Dot className={tone.dot} />
+          {tone.label}
         </span>
       </div>
 
-      <div className="flex flex-col gap-3 p-4">
-        <div className="flex flex-col gap-2 sm:flex-row">
-          {connected || status === "reconnecting" ? (
-            <button type="button" onClick={onDisconnect} className="btn-danger flex-1">
-              {status === "reconnecting" ? "Cancel" : "Disconnect"}
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={onConnect}
-              disabled={busy}
-              className="btn-primary flex-1"
-            >
-              {busy ? (
-                <>
-                  <Spinner className="h-4 w-4" />
-                  Connecting…
-                </>
-              ) : (
-                "Connect"
-              )}
-            </button>
-          )}
-        </div>
+      {status === "error" && errorDetail && (
+        <p className="rounded-lg border border-line bg-graphite-850 px-3 py-2 text-[12px] leading-relaxed text-error">
+          {errorDetail}
+        </p>
+      )}
 
-        <dl className="flex flex-col gap-1 text-xs text-slate-400">
-          <div className="flex gap-2">
-            <dt className="w-24 flex-none text-slate-500">LiveKit URL</dt>
-            <dd className="min-w-0 font-mono break-all text-slate-300">
-              {livekitUrl ?? "unset (see .env)"}
-            </dd>
-          </div>
-          {errorDetail && (
-            <div className="flex gap-2">
-              <dt className="w-24 flex-none text-slate-500">Last error</dt>
-              <dd className="min-w-0 break-words text-rose-300">{errorDetail}</dd>
-            </div>
-          )}
-        </dl>
+      <dl className="flex flex-col gap-3">
+        <Row label="LiveKit URL">
+          <span className="truncate font-mono text-[12px]">{livekitUrl ?? "—"}</span>
+        </Row>
+        {connected && (
+          <>
+            <Row label="Session ID">
+              <span className="truncate font-mono text-[12px]">{sessionId ?? "—"}</span>
+              {sessionId && <CopyButton text={sessionId} />}
+            </Row>
+            <Row label="Session time">
+              <span className="font-mono tabular-nums">{formatDuration(sessionDuration)}</span>
+            </Row>
+            <Row label="Microphone">
+              <span className={micEnabled ? "text-success" : "text-error"}>
+                {micEnabled ? "Enabled" : "Blocked"}
+              </span>
+            </Row>
+          </>
+        )}
+      </dl>
+
+      <div className="mt-1 flex gap-3">
+        {!connected && (
+          <button type="button" onClick={onConnect} disabled={busy} className="btn-accent flex-1">
+            {busy ? "Connecting…" : "Connect"}
+          </button>
+        )}
+        {connected && (
+          <button type="button" onClick={onDisconnect} className="btn-ghost flex-1">
+            Disconnect
+          </button>
+        )}
       </div>
     </section>
   );

@@ -1,30 +1,85 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 
 import type { AiMessage, UserTurn } from "@/hooks/use-voice-agent";
+import { formatTime } from "@/lib/format";
 
 interface TranscriptPanelProps {
   userTranscript: UserTurn[];
   aiMessages: AiMessage[];
   agentName: string;
   connected: boolean;
+  thinking: boolean;
 }
 
-function formatTime(timestamp: string): string {
-  const date = new Date(timestamp);
-  if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+type UserChatItem = {
+  kind: "user";
+  id: string;
+  text: string;
+  final: boolean;
+  timestamp: string;
+};
+
+type AgentChatItem = {
+  kind: "agent";
+  id: string;
+  text: string;
+  done: boolean;
+  timestamp: string;
+};
+
+type ChatItem = UserChatItem | AgentChatItem;
+
+function Cursor() {
+  return (
+    <span
+      className="ml-0.5 inline-block h-[1em] w-[2px] translate-y-[3px] animate-blink bg-ink-mid"
+      aria-hidden="true"
+    />
+  );
+}
+
+function TypingIndicator() {
+  return (
+    <div
+      className="flex items-center gap-1 px-1 py-1.5"
+      role="status"
+      aria-label="Agent is typing"
+    >
+      {[0, 1, 2].map((i) => (
+        <span
+          key={i}
+          className="h-1.5 w-1.5 animate-typing-dot rounded-full bg-ink-low"
+          style={{ animationDelay: `${i * 150}ms` }}
+        />
+      ))}
+    </div>
+  );
+}
+
+function MicIcon({ className = "h-5 w-5" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Zm-6 9a6 6 0 0 0 12 0M12 17v4m-3 0h6"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
 }
 
 function Skeleton() {
   return (
-    <div className="flex flex-col gap-3" aria-hidden="true">
+    <div className="flex flex-col gap-4" aria-hidden="true">
       {[0, 1, 2].map((i) => (
         <div
           key={i}
-          className="h-3 animate-shimmer rounded-full bg-gradient-to-r from-white/5 via-white/10 to-white/5"
-          style={{ width: `${92 - i * 18}%`, backgroundSize: "800px 100%" }}
+          className="h-3 rounded-full bg-white/[0.045]"
+          style={{ width: `${88 - i * 22}%` }}
         />
       ))}
     </div>
@@ -33,36 +88,21 @@ function Skeleton() {
 
 function EmptyState({ connected, agentName }: { connected: boolean; agentName: string }) {
   return (
-    <div className="flex h-full min-h-48 flex-col items-center justify-center gap-3 text-center text-sm text-slate-500">
+    <div className="flex h-full min-h-56 flex-col items-center justify-center gap-3 text-center">
       <span
-        className="flex h-11 w-11 items-center justify-center rounded-full border border-white/10 bg-white/5 text-slate-400"
+        className="flex h-12 w-12 items-center justify-center rounded-full bg-graphite-850 text-ink-low"
         aria-hidden="true"
       >
-        <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-          {connected ? (
-            <path
-              d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Zm-6 9a6 6 0 0 0 12 0M12 17v4m-3 0h6"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          ) : (
-            <path
-              d="M8 10h.01M12 10h.01M16 10h.01M21 12c0 4.4-4 8-9 8-1 0-2-.1-2.9-.4L4 21l1.4-3.2C3.9 16.4 3 14.3 3 12c0-4.4 4-8 9-8s9 3.6 9 8Z"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          )}
-        </svg>
+        <MicIcon />
       </span>
       {connected ? (
-        <p>
-          Listening… say something to {agentName}
-        </p>
+        <p className="text-[15px] text-ink-low">Listening… say something to {agentName}</p>
       ) : (
         <>
-          <p>No conversation yet — press Connect</p>
-          <p className="text-xs text-slate-600">
-            Your transcript and the agent&apos;s replies will appear here.
+          <p className="text-[15px] text-ink-mid">No conversation yet</p>
+          <p className="max-w-xs text-[13px] leading-relaxed text-ink-faint">
+            Press Connect to start. Your speech and the agent&apos;s replies
+            appear here in real time.
           </p>
         </>
       )}
@@ -75,6 +115,7 @@ export function TranscriptPanel({
   aiMessages,
   agentName,
   connected,
+  thinking,
 }: TranscriptPanelProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -88,65 +129,110 @@ export function TranscriptPanel({
     if (nearBottom) el.scrollTop = el.scrollHeight;
   }, [userTranscript, aiMessages]);
 
+  // Interleave both streams chronologically into one conversation.
+  const groups = useMemo(() => {
+    const merged: ChatItem[] = [
+      ...userTranscript.map((t) => ({
+        kind: "user" as const,
+        id: t.id,
+        text: t.text,
+        final: t.final,
+        timestamp: t.timestamp,
+      })),
+      ...aiMessages.map((m) => ({
+        kind: "agent" as const,
+        id: m.id,
+        text: m.text,
+        done: m.done,
+        timestamp: m.timestamp,
+      })),
+    ].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+
+    const grouped: { kind: ChatItem["kind"]; items: ChatItem[] }[] = [];
+    for (const item of merged) {
+      const last = grouped[grouped.length - 1];
+      if (last && last.kind === item.kind) last.items.push(item);
+      else grouped.push({ kind: item.kind, items: [item] });
+    }
+    return grouped;
+  }, [userTranscript, aiMessages]);
+
   const hasContent = userTranscript.length > 0 || aiMessages.length > 0;
+  const agentInitial = agentName.trim().charAt(0).toUpperCase() || "A";
 
   return (
-    <section className="panel flex h-full min-h-[28rem] flex-col" aria-label="Transcript">
-      <div className="panel-header">
-        <h2 className="panel-title">Transcript</h2>
-        <span className="text-[11px] text-slate-500">
-          You ↔ {agentName}
-        </span>
+    <section
+      className="flex h-full min-h-[30rem] flex-col overflow-hidden rounded-2xl border border-line bg-graphite-900 shadow-[0_1px_0_rgba(255,255,255,0.02)_inset,0_16px_40px_-20px_rgba(0,0,0,0.6)]"
+      aria-label="Conversation"
+    >
+      <div className="flex items-center justify-between border-b border-line px-7 py-4">
+        <h2 className="section-title">Conversation</h2>
+        <span className="text-[12px] text-ink-faint">You ↔ {agentName}</span>
       </div>
 
-      <div ref={scrollRef} className="flex-1 space-y-5 overflow-y-auto p-4">
-        {!hasContent && connected && <Skeleton />}
+      <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-7 sm:px-8">
+        {!hasContent && connected && !thinking && <Skeleton />}
+        {!hasContent && connected && thinking && <TypingIndicator />}
         {!hasContent && !connected && <EmptyState connected={false} agentName={agentName} />}
 
-        {userTranscript.length > 0 && (
-          <section aria-label="Your transcript" className="flex flex-col gap-2.5">
-            {userTranscript.map((turn) => (
-              <div key={turn.id} className="flex items-start gap-2.5">
-                <span className="mt-0.5 flex h-5 w-5 flex-none items-center justify-center rounded bg-brand-500/20 text-[10px] font-bold text-brand-300">
-                  You
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p
-                    className={`text-sm leading-relaxed text-slate-200 ${
-                      turn.final ? "" : "italic text-slate-300"
-                    }`}
-                  >
-                    {turn.text}
-                    {!turn.final && turn.text.length > 0 && (
-                      <span className="ml-0.5 inline-block h-3.5 w-0.5 animate-pulse-soft bg-brand-400 align-middle" />
-                    )}
-                  </p>
-                  <p className="mt-0.5 text-[10px] text-slate-600">{formatTime(turn.timestamp)}</p>
+        {hasContent && (
+          <div className="flex flex-col gap-8">
+            {groups.map((group, gi) =>
+              group.kind === "user" ? (
+                <div key={`u-${gi}`} className="flex flex-col items-end gap-1.5">
+                  {group.items.map((item, i) => (
+                    <div key={item.id} className="flex max-w-[85%] flex-col items-end">
+                      <p
+                        className={`rounded-2xl rounded-br-md bg-graphite-850 px-4 py-2.5 text-[15px] leading-relaxed shadow-[0_1px_2px_rgba(0,0,0,0.4)] ${
+                          (item as UserChatItem).final ? "text-ink-high" : "italic text-ink-mid"
+                        }`}
+                      >
+                        {item.text}
+                        {!(item as UserChatItem).final && item.text.length > 0 && <Cursor />}
+                      </p>
+                      {i === 0 && (
+                        <p className="mt-1.5 pr-1 text-[11px] text-ink-faint">
+                          {formatTime(item.timestamp, true)}
+                        </p>
+                      )}
+                    </div>
+                  ))}
                 </div>
-              </div>
-            ))}
-          </section>
-        )}
-
-        {aiMessages.length > 0 && (
-          <section aria-label="Agent replies" className="flex flex-col gap-2.5">
-            {aiMessages.map((message) => (
-              <div key={message.id} className="flex items-start gap-2.5">
-                <span className="mt-0.5 flex h-5 w-5 flex-none items-center justify-center rounded bg-voice-500/20 text-[10px] font-bold text-voice-300">
-                  AI
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm leading-relaxed text-slate-100">
-                    {message.text}
-                    {!message.done && (
-                      <span className="ml-0.5 inline-block h-3.5 w-0.5 animate-pulse-soft bg-voice-400 align-middle" />
-                    )}
-                  </p>
-                  <p className="mt-0.5 text-[10px] text-slate-600">{formatTime(message.timestamp)}</p>
+              ) : (                <div key={`a-${gi}`} className="flex flex-col gap-1.5">
+                  {group.items.map((item, i) => (
+                    <div key={item.id} className="flex items-start gap-3">
+                      {i === 0 ? (
+                        <span className="mt-0.5 flex h-7 w-7 flex-none items-center justify-center rounded-full bg-graphite-800 text-[12px] font-semibold text-ink-mid">
+                          {agentInitial}
+                        </span>
+                      ) : (
+                        <span className="mt-0.5 h-7 w-7 flex-none" aria-hidden="true" />
+                      )}
+                      <div className="min-w-0">
+                        {i === 0 && (
+                          <p className="flex items-baseline gap-2 text-[12px]">
+                            <span className="font-semibold text-ink-mid">{agentName}</span>
+                            <span className="text-ink-faint">
+                              {formatTime(item.timestamp, true)}
+                            </span>
+                          </p>
+                        )}
+                        <p
+                          className={`mt-0.5 text-[15px] leading-relaxed ${
+                            (item as AgentChatItem).done ? "text-ink-high" : "text-ink-mid"
+                          }`}
+                        >
+                          {item.text}
+                          {!(item as AgentChatItem).done && item.text.length > 0 && <Cursor />}
+                        </p>
+                      </div>
+                    </div>
+                  ))}
                 </div>
-              </div>
-            ))}
-          </section>
+              ),
+            )}
+            {thinking && <TypingIndicator />}
+          </div>
         )}
       </div>
     </section>
