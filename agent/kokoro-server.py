@@ -58,7 +58,7 @@ async def _edge_synth(text: str, voice: str, speed: float) -> bytes | None:
 
 @app.post("/tts")
 async def tts(req: TTSReq):
-    if req.voice.startswith("en-"):
+    if req.voice.startswith(("en-", "hi-")):
         try:
             wav = await asyncio.wait_for(
                 _edge_synth(req.text, req.voice, req.speed), timeout=_EDGE_TIMEOUT_S

@@ -218,7 +218,7 @@ class LLMClient(Protocol):
 class TTSClient(Protocol):
     """Protocol for text-to-speech backends."""
 
-    async def synthesize(self, text: str) -> bytes:
+    async def synthesize(self, text: str, *, voice: str | None = None) -> bytes:
         """Synthesize speech; return raw audio bytes (typically WAV)."""
         ...
 

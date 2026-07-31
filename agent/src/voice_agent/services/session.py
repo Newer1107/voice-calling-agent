@@ -150,6 +150,7 @@ class VoiceSession:
         self._message_count = 0
         self._any_tool_failed = False
         self._last_reply: str | None = None
+        self._last_lang: str | None = None
 
     # -- dashboard events ----------------------------------------------------
     def _emit(self, type_: str, data: dict[str, Any]) -> None:
@@ -253,6 +254,8 @@ class VoiceSession:
             await self._events.transcript_partial(self.session_id, speech.text)
             return
         await self._events.transcript_final(self.session_id, speech.text, confidence=speech.confidence, language=speech.language)
+        if speech.language:
+            self._last_lang = speech.language
         logger.info("user speech", extra={"event": "user_speech", "session_id": self.session_id, "text": speech.text})
         await self._handle_final(speech.text)
 
@@ -469,7 +472,7 @@ class VoiceSession:
     async def _speak(self, text: str) -> None:
         await self._events.state_speaking(self.session_id, active=True)
         try:
-            audio = await self._tts.synthesize(text)
+            audio = await self._tts.synthesize(text, voice=self._voice_for_language())
             if not audio:
                 raise RuntimeError("empty synthesis")
             await self._play_audio(audio)
@@ -481,6 +484,13 @@ class VoiceSession:
         finally:
             if not self._closed:
                 await self._events.state_speaking(self.session_id, active=False)
+
+    def _voice_for_language(self) -> str | None:
+        """Pick the TTS voice to match the user's detected language (Hindi vs default)."""
+        lang = (self._last_lang or "").lower()
+        if lang.startswith("hi"):
+            return self._settings.tts_hindi_voice or self._settings.tts_voice
+        return None  # client default (tts_voice)
 
     async def _play_audio(self, audio_bytes: bytes) -> None:
         pcm16, sample_rate, channels = decode_wav(audio_bytes)

@@ -62,13 +62,23 @@ def warmup_stt(settings: Settings) -> None:
             logger.info("whisper model warmed", extra={"event": "stt.model_warmed", "model": settings.stt_model_size})
             _mark_whisper_ok(settings)
 # Domain vocabulary bias for short utterances — improves word accuracy on
-# gym-specific terms ("gym plans" instead of "jump lands").
+# gym-specific terms ("gym plans" instead of "jump lands"). Bilingual so both
+# English and Hindi speech benefit.
 _INITIAL_PROMPT = (
     "gym, membership, plans, class, yoga, sauna, massage, book, booking, "
     "upgrade, personal training, order, inventory, session, Sarah, Ravi, "
     "IronPeak, receptionist, yes, no, please, confirm, renew, gold, platinum, "
-    "silver, want, today, tomorrow"
+    "silver, want, today, tomorrow, नमस्ते, मेम्बरशिप, बुकिंग, स्पा, मालिश, "
+    "जिम, प्लान, नाम, सारा"
 )
+# Whisper's auto-detection is unreliable on short utterances: it tends to
+# fall back to English. Below this confidence, retry the audio as Hindi and
+# use that pass when it yields Devanagari text.
+_EN_FALLBACK_CONFIDENCE = 0.9
+
+
+def _has_devanagari(text: str) -> bool:
+    return any("\u0900" <= ch <= "\u097f" for ch in text)
 
 
 class WhisperClient:
@@ -131,7 +141,7 @@ class WhisperClient:
             if self._model is None:
                 logger.warning("stt unavailable", extra={"event": "stt_unavailable", "error": self._model_error or "unknown"})
             return []
-        result = await asyncio.to_thread(self._recognize, buffer)
+        result = await asyncio.to_thread(self._recognize, buffer, partial=partial)
         if not result:
             return []
         if partial:
@@ -183,7 +193,7 @@ class WhisperClient:
             self._model_error = str(exc)
             logger.error("whisper model load failed", extra={"event": "stt.model_failed", "error": str(exc)})
 
-    def _recognize(self, pcm16: bytes) -> list[SpeechEvent]:
+    def _recognize(self, pcm16: bytes, *, partial: bool = False) -> list[SpeechEvent]:
         """Run one transcription pass inside the STT thread (blocking)."""
         import numpy as np
 
@@ -191,19 +201,25 @@ class WhisperClient:
             samples = np.frombuffer(pcm16, dtype=np.int16).astype(np.float32) / 32768.0
             if samples.size < self.settings.vad_min_speech_ms * 16:
                 return []
-            segments_iter, info = self._model.transcribe(
-                samples,
-                language=self.language_override or self.settings.stt_language,
-                vad_filter=self.endpoint_on_silence,  # silero pass for real endpoints
-                vad_parameters={"min_silence_duration_ms": self.settings.vad_min_silence_ms},
-                initial_prompt=_INITIAL_PROMPT,
-            )
-            text_parts: list[str] = []
-            for segment in segments_iter:
-                text_parts.append(segment.text)
-                if len(text_parts) >= 200:
-                    break
-            text = "".join(text_parts).strip()
+            lang = self.language_override or self.settings.stt_language or None
+            kwargs: dict[str, Any] = {
+                "vad_filter": self.endpoint_on_silence,
+                "vad_parameters": {"min_silence_duration_ms": self.settings.vad_min_silence_ms},
+                "initial_prompt": _INITIAL_PROMPT,
+            }
+            segments_iter, info = self._model.transcribe(samples, language=lang, **kwargs)
+            text = "".join(segment.text for segment in segments_iter).strip()
+            if (
+                not lang
+                and not partial
+                and info.language == "en"
+                and info.language_probability is not None
+                and info.language_probability < _EN_FALLBACK_CONFIDENCE
+            ):
+                hi_segments, hi_info = self._model.transcribe(samples, language="hi", **kwargs)
+                hi_text = "".join(segment.text for segment in hi_segments).strip()
+                if _has_devanagari(hi_text):
+                    return [SpeechEvent(kind="final", text=hi_text, language="hi", confidence=hi_info.language_probability)]
             if not text:
                 return []
             return [SpeechEvent(kind="final", text=text, language=info.language, confidence=getattr(info, "language_probability", None))]
