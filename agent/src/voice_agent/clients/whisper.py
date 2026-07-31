@@ -14,6 +14,7 @@ simply not recognized for that pass).
 from __future__ import annotations
 
 import asyncio
+import threading
 from typing import Any, Sequence
 
 import livekit.rtc as rtc
@@ -27,12 +28,35 @@ logger = get_logger("clients.whisper")
 RECOGNIZE_TIMEOUT_S = 20.0
 PARTIAL_INTERVAL_MS = 2000  # partial transcription cadence while speech is ongoing
 MAX_BUFFER_S = 30.0         # cap: force a final past this much continuous speech
+
+# Shared model across sessions: loaded once (prewarm or first session) so a
+# large model doesn't re-load per job.
+_MODEL: Any = None
+_MODEL_LOCK = threading.Lock()
+
+
+def warmup_stt(settings: Settings) -> None:
+    """Preload the shared Whisper model at worker startup (off the job path)."""
+    global _MODEL
+    if _MODEL is not None:
+        return
+    with _MODEL_LOCK:
+        if _MODEL is None:
+            from faster_whisper import WhisperModel
+
+            _MODEL = WhisperModel(
+                settings.stt_model_size,
+                device=settings.stt_device,
+                compute_type=settings.stt_compute_type,
+            )
+            logger.info("whisper model warmed", extra={"event": "stt.model_warmed", "model": settings.stt_model_size})
 # Domain vocabulary bias for short utterances — improves word accuracy on
 # gym-specific terms ("gym plans" instead of "jump lands").
 _INITIAL_PROMPT = (
     "gym, membership, plans, class, yoga, sauna, massage, book, booking, "
     "upgrade, personal training, order, inventory, session, Sarah, Ravi, "
-    "IronPeak, receptionist"
+    "IronPeak, receptionist, yes, no, please, confirm, renew, gold, platinum, "
+    "silver, want, today, tomorrow"
 )
 
 
@@ -129,14 +153,19 @@ class WhisperClient:
 
     def _load_model(self) -> None:
         """Blocking model construction; runs in a worker thread."""
+        global _MODEL
         try:
-            from faster_whisper import WhisperModel
+            if _MODEL is None:
+                with _MODEL_LOCK:
+                    if _MODEL is None:
+                        from faster_whisper import WhisperModel
 
-            self._model = WhisperModel(
-                self.settings.stt_model_size,
-                device=self.settings.stt_device,
-                compute_type=self.settings.stt_compute_type,
-            )
+                        _MODEL = WhisperModel(
+                            self.settings.stt_model_size,
+                            device=self.settings.stt_device,
+                            compute_type=self.settings.stt_compute_type,
+                        )
+            self._model = _MODEL
             logger.info("whisper model loaded", extra={"event": "stt.model_loaded", "model": self.settings.stt_model_size})
         except Exception as exc:
             self._model_error = str(exc)

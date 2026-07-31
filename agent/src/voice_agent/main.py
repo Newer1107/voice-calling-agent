@@ -201,6 +201,7 @@ async def prewarm_async(_proc: Any) -> None:
     settings = Settings()
     setup_logging(settings.agent_log_level, settings.agent_log_format)
     _start_api_in_thread(settings)
+    _warm_stt_in_thread(settings)
 
 
 def prewarm(_proc: Any) -> None:
@@ -213,6 +214,17 @@ def prewarm(_proc: Any) -> None:
     settings = Settings()
     setup_logging(settings.agent_log_level, settings.agent_log_format)
     _start_api_in_thread(settings)
+    _warm_stt_in_thread(settings)
+
+
+def _warm_stt_in_thread(settings: Settings) -> None:
+    """Load the Whisper model in the background so the first session hears
+    speech immediately instead of blocking on model load."""
+    import threading
+
+    from .clients.whisper import warmup_stt
+
+    threading.Thread(target=warmup_stt, args=(settings,), daemon=True).start()
 
 
 def _build_worker_options(settings: Settings) -> WorkerOptions:
