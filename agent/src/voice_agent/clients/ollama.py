@@ -29,17 +29,44 @@ def _status_retryable(status: int) -> bool:
 
 
 def _tool_call_from_text(content: str) -> ToolCall | None:
-    """Detect a tool call the model wrote as plain JSON text.
+    """Detect a tool call the model wrote as JSON text.
 
-    llama3.1 occasionally emits ``{"name": "lookupCustomer", "parameters":
-    {...}}`` in ``content`` instead of a structured ``tool_calls`` field.
-    Convert it so the session executes the tool instead of speaking the JSON.
+    llama3.1 and qwen2.5-coder frequently emit ``{"name": ..., "arguments":
+    {...}}`` inside ``content`` (sometimes with a prose preamble) instead of
+    using the structured ``tool_calls`` field. Extract the first balanced JSON
+    object and convert it so the session executes the tool instead of
+    speaking the JSON.
     """
-    text = content.strip().strip("`")
-    if text.startswith("json"):
-        text = text[4:].strip()
+    start = content.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    end = -1
+    in_string = False
+    escape = False
+    for i in range(start, len(content)):
+        ch = content[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+    if end == -1:
+        return None
     try:
-        obj = json.loads(text)
+        obj = json.loads(content[start : end + 1])
     except (json.JSONDecodeError, TypeError):
         return None
     if not isinstance(obj, dict):

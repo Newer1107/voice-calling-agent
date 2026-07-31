@@ -88,10 +88,10 @@ def build_default_tools(settings: Settings) -> list[WebhookTool]:
                 "properties": {
                     "customerName": {"type": "string", "description": "Member's name"},
                     "session": {"type": "string", "description": "Class or session name, e.g. Yoga Basics"},
-                    "date": {"type": "string", "description": "Date in ISO format, e.g. 2026-08-05"},
-                    "time": {"type": "string", "description": "Time in 24h HH:MM, e.g. 18:30"},
+                    "date": {"type": "string", "description": "Date in ISO format, e.g. 2026-08-05. Omit and n8n defaults to today."},
+                    "time": {"type": "string", "description": "Time in 24h HH:MM, e.g. 18:30. Omit and n8n defaults to 18:00."},
                 },
-                "required": ["customerName", "session", "date", "time"],
+                "required": ["customerName", "session"],
             },
             path="/book-appointment",
         ),
