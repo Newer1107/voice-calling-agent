@@ -1,15 +1,15 @@
 # frontend/
 
-Next.js voice-agent web console — runs on the **VPS** (Machine 1). The
+Next.js voice-agent web console. The
 browser UI for the voice agent: connect/disconnect, push-to-talk + voice
 activity mode, live user + AI transcripts, conversation history, connection
 status, speaking/listening/thinking indicators, and error toasts.
 
 The frontend talks to exactly two things:
 
-1. **LiveKit** (same machine) — for the microphone audio, streamed TTS
+1. **LiveKit Cloud** — for the microphone audio, streamed TTS
    playback, and the realtime data channel.
-2. **The Python agent's FastAPI helper** (Home Server, via Tailscale) — for
+2. **The Python agent's FastAPI helper** (Home Server) — for
    `POST /token` (get a short-lived LiveKit join token) and
    `GET /history/{sessionId}`.
 
@@ -19,9 +19,9 @@ Python agent is the only orchestration layer.
 ## Prerequisites
 
 - Node.js 18+ (tested with Node 24)
-- A reachable LiveKit server URL (this folder's sibling `../livekit/` runs it)
-- A reachable agent API URL — on the VPS that is the Home Server's Tailscale
-  address, e.g. `http://100.64.0.2:8080`
+- A reachable LiveKit Cloud URL (see `../livekit/README.md`)
+- A reachable agent API URL — the Home Server's address, e.g.
+  `http://192.168.x.x:8080`
 
 ## Required environment variables
 
@@ -29,8 +29,8 @@ Copy `.env.example` to `.env.local` and fill:
 
 | Variable | Purpose |
 |---|---|
-| `NEXT_PUBLIC_LIVEKIT_URL` | LiveKit server URL the browser connects to, e.g. `wss://livekit.example.com` |
-| `NEXT_PUBLIC_AGENT_API_URL` | Agent FastAPI base URL, e.g. `http://100.64.0.2:8080` (Tailscale address of the Home Server) |
+| `NEXT_PUBLIC_LIVEKIT_URL` | LiveKit Cloud URL the browser connects to, e.g. `wss://<your-project>.livekit.cloud` |
+| `NEXT_PUBLIC_AGENT_API_URL` | Agent FastAPI base URL, e.g. `http://192.168.x.x:8080` (Home Server, reachable from the browser) |
 | `NEXT_PUBLIC_AGENT_NAME` | Optional display name for the agent (default `Voice Agent`) |
 
 These are inlined at **build time** — set them before `npm run build`.

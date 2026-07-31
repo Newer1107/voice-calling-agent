@@ -44,7 +44,7 @@ participant:
 ```json
 {
   "token": "eyJhbGciOiJIUzI1NiIs...",
-  "url": "wss://your-livekit.example.com",
+  "url": "wss://<your-project>.livekit.cloud",
   "identity": "browser-user-42",
   "expiresAt": "2026-08-03T14:45:00Z"
 }

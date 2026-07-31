@@ -58,10 +58,10 @@ function requireEnv(name: string): string {
 /**
  * Request a short-lived LiveKit token for `roomName`.
  *
- * POST {AGENT_API_URL}/token   body: { roomName }
+ * POST {AGENT_API_URL}/token   body: { roomName, identity? }
  * ->    { token, url, identity }
  */
-export async function getToken(roomName: string): Promise<TokenResponse> {
+export async function getToken(roomName: string, identity?: string): Promise<TokenResponse> {
   const base = requireEnv("NEXT_PUBLIC_AGENT_API_URL");
   const livekitUrl = requireEnv("NEXT_PUBLIC_LIVEKIT_URL");
 
@@ -70,7 +70,7 @@ export async function getToken(roomName: string): Promise<TokenResponse> {
     res = await fetch(`${base}/token`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ roomName }),
+      body: JSON.stringify({ roomName, ...(identity ? { identity } : {}) }),
       signal: AbortSignal.timeout(10_000),
     });
   } catch (err) {

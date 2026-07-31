@@ -416,9 +416,11 @@ export function useVoiceAgent() {
 
     let token;
     let roomName;
+    let identity;
     try {
       roomName = generateRoomName();
-      token = await getToken(roomName);
+      identity = `web-${roomName}`;
+      token = await getToken(roomName, identity);
     } catch (err) {
       connectingRef.current = false;
       setStatus("error");

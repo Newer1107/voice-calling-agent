@@ -24,9 +24,15 @@ logger = get_logger("api")
 
 
 class TokenRequest(BaseModel):
-    """Body of POST /token."""
+    """Body of POST /token.
+
+    ``identity`` is optional — when omitted the agent generates a unique
+    browser identity (``web-<random>``). When supplied it is used verbatim
+    as the LiveKit participant identity.
+    """
 
     roomName: str = Field(min_length=1, max_length=255)
+    identity: str | None = Field(default=None, min_length=1, max_length=255)
 
 
 class TokenResponse(BaseModel):
@@ -53,7 +59,7 @@ def create_app(settings: Settings, conversations: ConversationManager) -> FastAP
     @app.post("/token", response_model=TokenResponse)
     async def token(body: TokenRequest) -> TokenResponse:
         """Issue a short-lived LiveKit join token for the requested room."""
-        identity = f"web-{uuid.uuid4().hex[:12]}"
+        identity = body.identity or f"web-{uuid.uuid4().hex[:12]}"
         jwt = (
             AccessToken(api_key=settings.livekit_api_key, api_secret=settings.livekit_api_secret)
             .with_identity(identity)

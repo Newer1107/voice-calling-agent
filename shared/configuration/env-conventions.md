@@ -7,7 +7,7 @@ this file is the source of truth for names and defaults.
 
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
-| `LIVEKIT_URL` | yes | — | LiveKit server URL (e.g. `wss://my-livekit.example.com`) |
+| `LIVEKIT_URL` | yes | — | LiveKit Cloud URL (e.g. `wss://<project>.livekit.cloud`) |
 | `LIVEKIT_API_KEY` | yes | — | LiveKit API key (server-side, signs tokens) |
 | `LIVEKIT_API_SECRET` | yes | — | LiveKit API secret (server-side) |
 | `LIVEKIT_WORKER_NAME` | no | `voice-agent` | Worker identity shown in LiveKit dashboard |
@@ -17,7 +17,7 @@ this file is the source of truth for names and defaults.
 | `OLLAMA_TIMEOUT_MS` | no | `30000` | LLM request timeout |
 | `OLLAMA_MAX_RETRIES` | no | `2` | Retries on transient LLM failures |
 | `OLLAMA_MAX_TOKENS` | no | `512` | Max completion tokens (keeps voice latency sane) |
-| `OLLAMA_SYSTEM_PROMPT` | no | — | Override the default system prompt (see `agent/src/voice_agent/llm/prompts.py`) |
+| `OLLAMA_SYSTEM_PROMPT` | no | — | Override the default system prompt (see `agent/src/voice_agent/clients/prompts.py`) |
 | `STT_MODEL_SIZE` | no | `base` | Faster-Whisper model size (`tiny`…`large-v3`) |
 | `STT_DEVICE` | no | `auto` | `auto`/`cpu`/`cuda` |
 | `STT_COMPUTE_TYPE` | no | `auto` | `auto`/`int8`/`float16`/`float32` |
@@ -44,8 +44,8 @@ this file is the source of truth for names and defaults.
 
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
-| `NEXT_PUBLIC_LIVEKIT_URL` | yes | — | LiveKit server URL the browser connects to (public) |
-| `NEXT_PUBLIC_AGENT_API_URL` | yes | — | Agent FastAPI base (token + history), e.g. `http://localhost:8080` |
+| `NEXT_PUBLIC_LIVEKIT_URL` | yes | — | LiveKit Cloud URL the browser connects to (public), e.g. `wss://<project>.livekit.cloud` |
+| `NEXT_PUBLIC_AGENT_API_URL` | yes | — | Agent FastAPI base (token + history), e.g. `http://192.168.x.x:8080` |
 | `NEXT_PUBLIC_AGENT_NAME` | no | `Voice Agent` | Display name of the agent participant |
 
 ## Shared conventions
@@ -54,3 +54,8 @@ this file is the source of truth for names and defaults.
   them — it gets a short-lived JWT from `POST /token`.
 - All timeouts/retries are configurable via env, never hardcoded.
 - `N8N_WEBHOOK_*` vars exist only on the agent side; the frontend has no n8n knowledge.
+- **Whisper runs in-process on the Home Server** (Faster-Whisper via the
+  `STT_*` vars above) — there is deliberately **no `WHISPER_BASE_URL`** and no
+  separate Whisper service. If you later want a remote Whisper service, add it
+  behind the agent's `STTClient` protocol (`agent/src/voice_agent/clients/base.py`)
+  and add the env var then; the rest of the pipeline is unaffected.

@@ -49,9 +49,12 @@ errors flow over the LiveKit data channel as typed events pinned in
 ```
 
 The FastAPI helper runs in the same process as the agent worker
-(`ENABLE_AGENT_API` gates it). Local speech models (Ollama, Kokoro, Whisper)
-run on the same machine as the agent. n8n may run anywhere reachable over
-HTTP.
+(`ENABLE_AGENT_API` gates it). Speech models: Whisper and Kokoro run locally
+on the Home Server; Ollama runs on a separate AI Server reachable over the
+LAN (`OLLAMA_BASE_URL`, e.g. `http://192.168.x.x:11434` — never localhost).
+n8n may run anywhere reachable over HTTP. Realtime transport is **LiveKit
+Cloud** (managed — the agent and browser join the same room, no self-hosted
+LiveKit).
 
 ## Module responsibilities
 
