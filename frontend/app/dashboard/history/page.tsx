@@ -43,15 +43,15 @@ function DetailDialog({
       {detail && (
         <div className="flex flex-col gap-7">
           <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-[12px] text-ink-low">
-            {detail.customer && (
+            {detail.customerName && (
               <span className="flex items-center gap-2 text-ink-mid">
-                {detail.customer.name}
-                <TierBadge tier={detail.customer.tier} />
+                {detail.customerName}
+                
               </span>
             )}
             <span>{formatDate(detail.startedAt)} · {formatTime(detail.startedAt, true)}</span>
             <span>{formatSeconds(detail.durationSec)}</span>
-            <span>{detail.messageCount} messages</span>
+            <span>{detail.messages.length} messages</span>
             <StatusBadge status={detail.outcome} />
           </div>
 
@@ -84,11 +84,11 @@ function DetailDialog({
 
           <section aria-label="Tool calls">
             <h3 className="section-title mb-4">Tool Calls</h3>
-            {detail.tools.length === 0 ? (
+            {detail.toolExecutions.length === 0 ? (
               <p className="text-[12px] text-ink-faint">No tools were invoked.</p>
             ) : (
               <div className="flex flex-col gap-2.5">
-                {detail.tools.map((tool, i) => (
+                {detail.toolExecutions.map((tool, i) => (
                   <div key={i} className="rounded-lg border border-line bg-graphite-850 px-3.5 py-3">
                     <div className="flex items-center gap-3">
                       <span className={`h-1.5 w-1.5 flex-none rounded-full ${tool.ok ? "bg-success" : "bg-error"}`} aria-hidden="true" />

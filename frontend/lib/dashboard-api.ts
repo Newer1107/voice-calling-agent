@@ -72,18 +72,12 @@ export interface HistoryEntry {
 export interface ConversationDetail {
   id: string;
   startedAt: string;
-  customer?: {
-    name: string;
-    tier: string;
-    membershipStatus: string;
-    visitsThisMonth: number;
-  };
+  customerName?: string | null;
   messages: ConversationMessage[];
-  tools: ToolCallRef[];
+  toolExecutions: ToolCallRef[];
   outcome: string;
   summary: string;
   durationSec: number;
-  messageCount: number;
 }
 
 export type AppointmentStatus = "confirmed" | "pending" | "cancelled" | string;
