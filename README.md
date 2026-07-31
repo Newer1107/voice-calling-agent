@@ -208,6 +208,72 @@ sequenceDiagram
    name) in `ConversationManager`; history is retrievable via
    `GET /history/{sessionId}`.
 
+## Demo guide: what you can ask the voice agent
+
+The agent is **Maya**, the IronPeak Fitness receptionist. Everything below works
+live — the tools are real webhook calls (the business data is mock, but the
+behaviour is production-shaped).
+
+### Capabilities at a glance
+
+| Function | What it does | Try saying |
+|---|---|---|
+| **Member profile** | The moment you say your name, the agent loads your full profile: membership tier, expiry, visits and **upcoming bookings** — no repetition needed | "My name is Sarah" → *"Hello Sarah! Welcome back…"* then "What do I have booked?" |
+| **Gym booking** | Book classes and personal training | "Book a personal training session for Friday" |
+| **Spa booking** | Book massages, saunas, facials | "Book a Swedish massage for tomorrow afternoon" |
+| **Cancellations** | Cancel one or all bookings | "Cancel all my bookings" |
+| **Membership** | Tier, status, expiry date, days left | "When does my membership expire?" |
+| **Upgrades** | Move to Gold or Platinum | "Upgrade me to Platinum" |
+| **Orders** | Buy merchandise (shakes, bands, tees…) | "Order two protein shakes and a gym tee" |
+| **Availability** | Equipment/facility stock and availability | "Is the sauna available tomorrow morning?" |
+| **Email** | Send confirmations or info by email | "Email me today's class schedule" |
+| **Renewal nudge** | When a membership expires within 30 days, Maya mentions it once and offers to renew | Use the name **Ravi** — his mock membership expires in 3 days |
+
+### The 2-minute demo script
+
+Run this top to bottom in front of a client:
+
+1. **The hook** — *"Hi, my name is Ravi."* → Maya auto-fetches his profile and
+   warns him his membership expires in **3 days**, offering to renew. (Shows
+   memory + proactive retention.)
+2. **The booking** — *"Book me a Swedish massage for tomorrow afternoon."* →
+   confirmed with therapist and time, by name. (Shows real webhook execution.)
+3. **The membership** — *"How much to upgrade to Platinum?"* → answers from the
+   profile and offers the upgrade. (Shows the upsell path.)
+4. **The multi-task turn** — *"Book a yoga class on Friday, order two resistance
+   bands, and check if you have a 16kg kettlebell."* → three tools executed in
+   one conversation. (Shows orchestration.)
+5. **The cancellation** — *"Cancel all my bookings."* → cleanly cancels, no
+   questions about which ones. (Shows the full service loop.)
+6. **The graceful failure** — *"Book me a shark-wrestling session."* → Maya
+   politely says she can't and offers the spa instead. (Shows honest AI
+   behaviour — no fabricated success.)
+
+### What this demonstrates to a client (business value)
+
+- **24/7 front desk** — a receptionist that never sleeps: bookings,
+  cancellations and membership questions handled without staff.
+- **Member self-service** — the member never repeats themselves; the agent
+  pulls their record the moment they give their name.
+- **Revenue moments** — spa bookings, membership upgrades and merchandise
+  orders are all conversational upsell opportunities.
+- **Retention** — proactive renewal warnings before memberships lapse.
+- **Operational** — live availability and inventory answers; confirmations
+  emailed automatically.
+- **Honest AI** — graceful "I can't do that" handling instead of hallucinated
+  success, and a real-time voice pipeline (STT → LLM → business logic → TTS).
+
+### Demo tips
+
+- Say your **name early** — the profile lookup and name-remembering are the
+  showpiece features; they only fire once she knows who you are.
+- Hold **Space** to talk (push-to-talk is the default); toggle **Voice
+  activity** for hands-free.
+- Names are deterministic mock data: **Ravi** (expires in 3 days — renewal
+  hook), **Sarah** (Silver, 31 days, 2 upcoming bookings), **Alice** (Gold,
+  25 days).
+- Keep each utterance to one or two requests for maximum reliability.
+
 ## Repository layout
 
 | Folder | Used by | What it is |
