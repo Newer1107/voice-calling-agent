@@ -117,6 +117,27 @@ def build_default_tools(settings: Settings) -> list[WebhookTool]:
         ),
         WebhookTool(
             settings,
+            name="cancelBooking",
+            description=(
+                "Cancel a member's gym class, personal training or spa booking. "
+                "Call when the user wants to cancel, remove, or reschedule a booking, "
+                "appointment, class, massage or spa session - including 'cancel all "
+                "my bookings' (pass the member's name)."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "customerName": {"type": "string", "description": "Member's name"},
+                    "session": {"type": "string", "description": "Class, training or spa session name, e.g. Personal Training or Swedish Massage"},
+                    "bookingId": {"type": "string", "description": "Booking id if the user has one, e.g. GYM-3482 or SPA-1909"},
+                    "date": {"type": "string", "description": "Date in ISO format, e.g. 2026-08-05. Omit and n8n cancels the most recent booking."},
+                },
+                "required": ["customerName"],
+            },
+            path="/cancel-booking",
+        ),
+        WebhookTool(
+            settings,
             name="getMembership",
             description=(
                 "Get a member's membership details: tier, status, expiry date, days remaining "

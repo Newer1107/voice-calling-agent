@@ -54,7 +54,9 @@ _MARKDOWN = re.compile(r"[\*`]|^\s*(?:[-•]|#+)\s*", re.MULTILINE)
 
 def sanitize_spoken_text(text: str) -> str:
     """Strip markdown/formatting symbols so replies stay plain conversational text."""
-    return _MARKDOWN.sub("", text).strip()
+    text = _MARKDOWN.sub("", text)
+    # U+FFFD: the model occasionally renders £/₹ as a broken replacement char.
+    return text.replace("\ufffd", "").strip()
 
 
 def tool_calls_to_wire(tool_calls: list[ToolCall]) -> list[dict[str, Any]]:
