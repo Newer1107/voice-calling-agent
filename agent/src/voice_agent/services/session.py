@@ -49,7 +49,7 @@ FRAME_CHUNK_MS = 40              # output frames pushed at 40ms granularity
 _SENTENCE_END = re.compile(r"[.!?…]\s*")
 # Markdown/formatting leaks (**, bullets, backticks) must never reach the
 # transcript or the TTS — they'd be read aloud as gibberish.
-_MARKDOWN = re.compile(r"[\*`]|^\s*(?:[-•]|#+)\s*", re.MULTILINE)
+_MARKDOWN = re.compile(r"[\*`]|^\s*(?:[-•]|#+)\s*|\{[^{}]*\}", re.MULTILINE)
 
 
 def sanitize_spoken_text(text: str) -> str:
@@ -304,7 +304,9 @@ class VoiceSession:
 
         if not emitted:
             return None
-        text = "".join(parts).strip()
+        # Re-sanitize the assembled text: a JSON echo or markdown that arrived
+        # split across streamed deltas is only complete now.
+        text = sanitize_spoken_text("".join(parts))
         await self._events.message_done(self.session_id, message_id, text)
         if text:
             await self._conversations.add_message(self.session_id, ConversationMessage(role="assistant", content=text))
@@ -319,7 +321,7 @@ class VoiceSession:
             if match is None:
                 break
             index = match.end()
-            sentence = joined[:index].strip()
+            sentence = sanitize_spoken_text(joined[:index])
             self._sentence_buf = [joined[index:]]
             if sentence:
                 await tts_queue.put(sentence)

@@ -140,9 +140,9 @@ def build_default_tools(settings: Settings) -> list[WebhookTool]:
             settings,
             name="getMembership",
             description=(
-                "Get a member's membership details: tier, status, expiry date, days remaining "
-                "and renewal price. Call whenever a member gives their name or asks about their "
-                "membership, plan, tier, expiry, renewal, or when it runs out."
+                "Detailed membership renewal info: tier, status, expiry date, days remaining "
+                "and renewal price. Call for renewal or upgrade pricing questions. Use "
+                "lookupCustomer for the full member profile when a name is first given."
             ),
             parameters={
                 "type": "object",
@@ -204,8 +204,9 @@ def build_default_tools(settings: Settings) -> list[WebhookTool]:
             settings,
             name="lookupCustomer",
             description=(
-                "Look up a gym member's account (membership tier, status, visits). "
-                "Call when the user asks about their membership, plan, tier, or account details."
+                "Load a member's complete profile: membership tier, status, expiry date, "
+                "visits this month and upcoming bookings. Call the moment a member gives "
+                "their name - it is how you know everything about them without asking."
             ),
             parameters={
                 "type": "object",
