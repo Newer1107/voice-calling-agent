@@ -132,11 +132,20 @@ export function useVoiceAgent() {
   const sessionIdRef = useRef<string>("");
   const vadEnabledRef = useRef(true);
   const errorTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  // LiveKit bills per connected participant-minute, so a tab left connected
+  // but idle leaks billable minutes. Disconnect after IDLE_DISCONNECT_MS of
+  // no activity (transcripts, speaking/thinking, PTT, VAD toggles).
+  const lastActivityRef = useRef<number>(Date.now());
+  const IDLE_DISCONNECT_MS = 10 * 60_000;
 
   // Keep a ref in sync so `connect` (memoized on [status]) sees the latest VAD pref.
   useEffect(() => {
     vadEnabledRef.current = vadEnabled;
   }, [vadEnabled]);
+
+  const markActivity = useCallback(() => {
+    lastActivityRef.current = Date.now();
+  }, []);
 
   const dismissError = useCallback((id: string) => {
     setErrors((prev) => prev.filter((e) => e.id !== id));
@@ -191,6 +200,7 @@ export function useVoiceAgent() {
 
   const handleEvent = useCallback(
     (event: RealtimeEvent) => {
+      lastActivityRef.current = Date.now();
       learnSession(event.sessionId);
 
       switch (event.type) {
@@ -442,6 +452,7 @@ export function useVoiceAgent() {
     if (status !== "disconnected" && status !== "error") return;
 
     connectingRef.current = true;
+    lastActivityRef.current = Date.now();
     resetConversation();
     setStatus("connecting");
 
@@ -488,18 +499,21 @@ export function useVoiceAgent() {
 
   const startPushToTalk = useCallback(() => {
     if (status !== "connected") return;
+    lastActivityRef.current = Date.now();
     setPttHeld(true);
     roomRef.current?.publishClientMessage("client.ptt.start", {}, sessionIdRef.current);
   }, [status]);
 
   const stopPushToTalk = useCallback(() => {
     if (!pttHeld) return;
+    lastActivityRef.current = Date.now();
     setPttHeld(false);
     roomRef.current?.publishClientMessage("client.ptt.stop", {}, sessionIdRef.current);
   }, [pttHeld]);
 
   const toggleVad = useCallback(() => {
     const enabled = !vadEnabled;
+    lastActivityRef.current = Date.now();
     setVadEnabled(enabled);
     roomRef.current?.publishClientMessage(
       "client.config",
@@ -521,6 +535,21 @@ export function useVoiceAgent() {
 
   // Keep mic mute state in sync when a (re)connect publishes/unpublishes.
   const connected = status === "connected";
+
+  // Idle watchdog: checks every 30s while connected and disconnects when the
+  // conversation has been silent for the idle window (prevents billable
+  // participant-minutes leaking from a tab left open overnight).
+  useEffect(() => {
+    if (!connected) return;
+    const id = setInterval(() => {
+      if (Date.now() - lastActivityRef.current > IDLE_DISCONNECT_MS) {
+        void roomRef.current?.disconnect();
+        pushError("idle_timeout", "Disconnected after 10 minutes of inactivity.", true);
+      }
+    }, 30_000);
+    return () => clearInterval(id);
+  }, [connected, pushError]);
+
   const effectiveListening: ListenState = pttHeld
     ? { active: true, source: "ptt" }
     : agentListening;
