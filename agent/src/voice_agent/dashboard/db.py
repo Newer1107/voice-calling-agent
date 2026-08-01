@@ -636,3 +636,7 @@ class DashboardDB:
                 for o in orders
             ],
         }
+
+
+def _iso(value: Any) -> str | None:
+    return value.isoformat() if value is not None else None
