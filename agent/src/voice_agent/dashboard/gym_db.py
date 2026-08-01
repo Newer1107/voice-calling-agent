@@ -43,7 +43,8 @@ CREATE TABLE IF NOT EXISTS gym_classes (
   name TEXT NOT NULL,
   category TEXT,
   duration_min INT,
-  instructor TEXT
+  instructor TEXT,
+  capacity INT DEFAULT 20
 );
 CREATE TABLE IF NOT EXISTS spa_services (
   id SERIAL PRIMARY KEY,
@@ -94,6 +95,12 @@ CREATE TABLE IF NOT EXISTS staff_requests (
   status TEXT NOT NULL DEFAULT 'pending',
   created_at TIMESTAMPTZ DEFAULT now()
 );
+CREATE TABLE IF NOT EXISTS gym_kb (
+  id SERIAL PRIMARY KEY,
+  topic TEXT NOT NULL,
+  keywords TEXT NOT NULL,
+  answer TEXT NOT NULL
+);
 """
 
 TIER_PRICES = {"Silver": "39.00 GBP", "Gold": "59.00 GBP", "Platinum": "99.00 GBP"}
@@ -140,7 +147,7 @@ async def _seed(conn: asyncpg.Connection) -> None:
     # process start (module `_gym_ready` guard prevents re-seeding).
     await conn.execute(
         "TRUNCATE members, memberships, gym_classes, spa_services, bookings, products, gym_orders, "
-        "membership_plans, staff_requests RESTART IDENTITY CASCADE"
+        "membership_plans, staff_requests, gym_kb RESTART IDENTITY CASCADE"
     )
     members = [
         ("Sarah", "sarah@gym.example", "555-0101", _days_from_today(-540), "Silver", "active", 31, 15, 620.0),
@@ -172,8 +179,8 @@ async def _seed(conn: asyncpg.Connection) -> None:
         ("Personal Training", "Strength", 60, "Arjun"),
     ]:
         await conn.execute(
-            "INSERT INTO gym_classes (name, category, duration_min, instructor) VALUES ($1,$2,$3,$4)",
-            name, category, dur, instructor,
+            "INSERT INTO gym_classes (name, category, duration_min, instructor, capacity) VALUES ($1,$2,$3,$4,$5)",
+            name, category, dur, instructor, 20,
         )
     for name, dur, price, therapist in [
         ("Swedish Massage", 60, 79.0, "Aisha"),
@@ -212,6 +219,33 @@ async def _seed(conn: asyncpg.Connection) -> None:
         await conn.execute(
             "INSERT INTO membership_plans (tier, price, perks) VALUES ($1,$2,$3) ON CONFLICT (tier) DO NOTHING",
             tier, price, perks,
+        )
+    kb_rows = [
+        ("hours", "hours open close time weekday weekend",
+         "IronPeak Fitness is open Monday to Friday from 6 AM to 10 PM, Saturday from 7 AM to 9 PM, and Sunday from 8 AM to 8 PM."),
+        ("location", "where address located location",
+         "IronPeak Fitness is at 42 High Street, near the town centre, with free parking for members and a bike rack out front."),
+        ("guest policy", "guest pass bring friend visitor day pass",
+         "Members get one free guest pass per month with Silver, two with Gold and four with Platinum. Extra guest day passes are 15 GBP and can be bought over the phone."),
+        ("freeze policy", "freeze pause hold membership vacation",
+         "You can freeze your membership for up to 30 days per year at no charge. Request it and our front desk staff will set it up."),
+        ("cancellation policy", "cancel cancel membership quit leave",
+         "Memberships can be cancelled with 30 days notice; the request is handled by our front desk staff over the phone or in person."),
+        ("dress code", "dress code wear clothes shoes towel",
+         "Trainers and comfortable gym wear are required; a towel is needed for equipment. We sell towels, tees and gear at the front desk."),
+        ("parking", "parking car bike park",
+         "Members park free in our car park at the back of the building; there is also a covered bike rack."),
+        ("personal training", "personal training pt trainer coach",
+         "Personal training sessions with our certified coaches are 25 GBP each, or 100 GBP for a 5-pack and 180 GBP for a 10-pack. Platinum members get unlimited PT included."),
+        ("nutrition", "nutrition diet meal plan coach",
+         "Nutrition coaching with our in-house dietitian is 30 GBP per month and includes a personalised meal plan and monthly check-ins."),
+        ("classes", "classes timetable schedule group",
+         "We run yoga, HIIT, spin, CrossFit and personal training. Classes are included in every membership; check with Maya to book a spot."),
+    ]
+    for topic, keywords, answer in kb_rows:
+        await conn.execute(
+            "INSERT INTO gym_kb (topic, keywords, answer) VALUES ($1,$2,$3)",
+            topic, keywords, answer,
         )
     await conn.execute(
         "INSERT INTO bookings (booking_id, member_name, kind, service, date, time, status) VALUES "
@@ -311,6 +345,24 @@ class GymDB:
         days_ago = (date.today() - finished.date()).days if finished is not None else None
         return {"summary": row["summary"], "daysAgo": days_ago}
 
+    async def verify_member(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Verify a caller is the member by matching the last digits of their phone."""
+        name = str(args.get("name") or "")
+        last_digits = str(args.get("lastPhoneDigits") or "").strip()
+        member = await self._member(name)
+        if member is None:
+            raise ValueError("No customer found")
+        phone = str(member["phone"] or "")
+        if not last_digits:
+            raise ValueError("Ask the member for the last two digits of their phone number first")
+        if not phone.endswith(last_digits):
+            raise ValueError("Verification failed - the phone digits do not match")
+        return {
+            "name": member["name"],
+            "verified": True,
+            "phoneMasked": phone[:3] + "***" + phone[-2:],
+        }
+
     async def lookup_customer(self, args: dict[str, Any]) -> dict[str, Any]:
         member = await self._member(str(args.get("name") or args.get("email") or ""))
         if member is None:
@@ -326,9 +378,38 @@ class GymDB:
             "renewalPrice": TIER_PRICES.get(member["tier"], "39.00 GBP"),
             "visitsThisMonth": int(member["visits_this_month"]),
             "ltv": float(member["ltv"]),
+            "phone": str(member["phone"] or ""),
             "upcomingBookings": await self._upcoming_bookings(member["name"]),
             "lastVisit": await self._last_conversation(member["name"]),
+            "recommendations": self._recommendations(member),
         }
+
+    @staticmethod
+    def _recommendations(member: asyncpg.Record) -> list[dict[str, str]]:
+        """Data-driven upsell suggestions based on the member's profile.
+
+        Each item is a short, natural offer the agent can make once during a
+        call. Rules use the seeded profile fields: tier, days to expiry,
+        visits this month and lifetime value.
+        """
+        out: list[dict[str, str]] = []
+        tier = member["tier"]
+        days_left = (member["expires_on"] - date.today()).days
+        visits = int(member["visits_this_month"])
+        ltv = float(member["ltv"])
+        if tier == "Silver":
+            if visits >= 10:
+                out.append({"offer": "Gold upgrade", "text": "You're visiting often - Gold is only 59 GBP a month and adds spa access plus two personal training sessions. Should I send the upgrade request?"})
+            else:
+                out.append({"offer": "PT 5-pack", "text": "A personal training 5-pack is 100 GBP and a great way to hit your goals. Want me to add one?"})
+        elif tier == "Gold":
+            if days_left <= 30:
+                out.append({"offer": "Platinum upgrade", "text": "Since your renewal is coming up, Platinum is just 99 GBP a month and includes unlimited personal training and the full spa. Want me to send the upgrade request?"})
+            else:
+                out.append({"offer": "Guest day pass", "text": "A guest day pass is 15 GBP - perfect for bringing a friend to try the gym. Should I add one?"})
+        if ltv >= 3000:
+            out.append({"offer": "Referral", "text": "As one of our most valued members, bring a friend and you both get a free guest day pass. Want details?"})
+        return out[:2]
 
     async def get_membership(self, args: dict[str, Any]) -> dict[str, Any]:
         member = await self._member(str(args.get("name") or args.get("email") or ""))
@@ -455,6 +536,27 @@ class GymDB:
             ]
         }
 
+    async def search_knowledge_base(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Keyword-match a gym question against the knowledge base (hours,
+        policies, guest passes, parking, PT pricing, classes, nutrition)."""
+        query = str(args.get("query") or "").strip()
+        if not query:
+            raise ValueError("A query is required")
+        rows = await self._fetch(
+            "SELECT topic, keywords, answer FROM gym_kb "
+            "WHERE $1 ILIKE '%' || keywords || '%' "
+            "OR keywords ILIKE '%' || $1 || '%' "
+            "OR $1 ILIKE '%' || topic || '%' "
+            "ORDER BY id LIMIT 3",
+            query,
+        )
+        if not rows:
+            return {"answer": None, "matches": []}
+        return {
+            "answer": rows[0]["answer"],
+            "matches": [{"topic": r["topic"], "answer": r["answer"]} for r in rows],
+        }
+
     async def create_order(self, args: dict[str, Any]) -> dict[str, Any]:
         name = str(args.get("customerName") or "")
         items = args.get("items") or []
@@ -495,8 +597,47 @@ class GymDB:
             "SELECT name, stock FROM products WHERE lower(name) = lower($1)", name
         )
         if row is None:
-            raise ValueError(f"{name} not found")
+            # Not a product - check whether it's a class (spaces left selling).
+            class_row = await self._fetchrow(
+                "SELECT c.name, c.capacity, c.instructor, "
+                "(SELECT count(*) FROM bookings b WHERE lower(b.service) = lower(c.name) AND b.status = 'confirmed' AND b.date >= $2) AS booked "
+                "FROM gym_classes c WHERE lower(c.name) = lower($1)",
+                name, date.today().isoformat(),
+            )
+            if class_row is None:
+                raise ValueError(f"{name} not found")
+            spots = max(0, int(class_row["capacity"]) - int(class_row["booked"]))
+            return {
+                "item": class_row["name"],
+                "kind": "class",
+                "spotsLeft": spots,
+                "capacity": int(class_row["capacity"]),
+                "instructor": class_row["instructor"],
+                "available": spots > 0,
+            }
         return {"item": row["name"], "available": int(row["stock"]), "inStock": int(row["stock"]) > 0, "location": "Gym Floor"}
+
+    async def list_classes(self, args: dict[str, Any]) -> dict[str, Any]:
+        """All classes with instructor, capacity and spots left today."""
+        rows = await self._fetch(
+            "SELECT c.name, c.category, c.duration_min, c.instructor, c.capacity, "
+            "(SELECT count(*) FROM bookings b WHERE lower(b.service) = lower(c.name) "
+            " AND b.status = 'confirmed' AND b.date >= $1) AS booked "
+            "FROM gym_classes c ORDER BY c.name",
+            date.today().isoformat(),
+        )
+        return {
+            "classes": [
+                {
+                    "name": r["name"],
+                    "category": r["category"],
+                    "durationMin": int(r["duration_min"]),
+                    "instructor": r["instructor"],
+                    "spotsLeft": max(0, int(r["capacity"]) - int(r["booked"])),
+                }
+                for r in rows
+            ]
+        }
 
     async def send_email(self, args: dict[str, Any]) -> dict[str, Any]:
         return {

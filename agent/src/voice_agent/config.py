@@ -74,6 +74,12 @@ class Settings(BaseSettings):
     vad_min_speech_ms: int = Field(default=250, ge=0)
     vad_min_silence_ms: int = Field(default=700, ge=0)
 
+    # --- Caller verification ------------------------------------------------
+    verify_callers: bool = Field(
+        default=False,
+        description="When true, ask callers for the last digits of their phone to verify identity (VERIFY_CALLERS)",
+    )
+
     # --- Kokoro TTS ----------------------------------------------------------
     tts_base_url: str = Field(default="http://localhost:8880")
     tts_voice: str = Field(default="af_heart")

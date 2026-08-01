@@ -155,11 +155,31 @@ _TOOL_SPECS: list[dict[str, Any]] = [
         "handler": "get_membership_plans",
     },
     {
+        "name": "searchKnowledgeBase",
+        "description": (
+            "Search IronPeak's knowledge base for gym facts: opening hours, location, "
+            "guest pass policy, membership freeze, cancellation policy, dress code, "
+            "parking, personal training pricing, nutrition coaching and class schedule. "
+            "Call when the user asks a factual question about the gym that is not a "
+            "booking, membership profile, plan or inventory question. Answer using the "
+            "returned text."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "The user's question or its key terms"},
+            },
+            "required": ["query"],
+        },
+        "handler": "search_knowledge_base",
+    },
+    {
         "name": "lookupCustomer",
         "description": (
             "Load a member's complete profile: membership tier, status, expiry date, "
-            "visits this month and upcoming bookings. Call the moment a member gives "
-            "their name - it is how you know everything about them without asking."
+            "visits this month, upcoming bookings, lastVisit (previous conversation) "
+            "and recommendations (data-driven upsell offers). Call the moment a member "
+            "gives their name - it is how you know everything about them without asking."
         ),
         "parameters": {
             "type": "object",
@@ -170,6 +190,24 @@ _TOOL_SPECS: list[dict[str, Any]] = [
             "description": "Provide at least one of name or email",
         },
         "handler": "lookup_customer",
+    },
+    {
+        "name": "verifyMember",
+        "description": (
+            "Verify a caller is really the member by matching the last digits of the "
+            "phone number on file. Call ONLY when the user offers to verify who they "
+            "are or when identity matters (e.g. before sharing sensitive account "
+            "details). The profile's phone field shows the last two digits to confirm."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Member name"},
+                "lastPhoneDigits": {"type": "string", "description": "Last 2 digits of the phone number on file"},
+            },
+            "required": ["name", "lastPhoneDigits"],
+        },
+        "handler": "verify_member",
     },
     {
         "name": "createOrder",
@@ -201,18 +239,33 @@ _TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "checkInventory",
         "description": (
-            "Check whether gym equipment or merchandise is in stock. "
-            "Call when the user asks about availability of a product or equipment."
+            "Check whether gym equipment or merchandise is in stock, OR how many "
+            "spots are left in a class. Call when the user asks about availability "
+            "of a product, equipment, or whether there is space in a class "
+            "(e.g. 'is the sauna available', 'any spots in yoga tomorrow')."
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "productName": {"type": "string", "description": "Product or equipment name"},
+                "productName": {"type": "string", "description": "Product, equipment or class name"},
                 "productId": {"type": "string", "description": "Product id if known"},
             },
             "description": "Provide at least one of productName or productId",
         },
         "handler": "check_inventory",
+    },
+    {
+        "name": "listClasses",
+        "description": (
+            "List all IronPeak group classes with their instructor, duration and how "
+            "many spots are left. Call when the user asks what classes are available, "
+            "what the class timetable looks like, or wants to pick a class to book."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {},
+        },
+        "handler": "list_classes",
     },
     {
         "name": "sendEmail",
