@@ -67,6 +67,16 @@ def sanitize_spoken_text(text: str) -> str:
     return text.replace("\ufffd", "").strip()
 
 
+# Matches the tool-call JSON the model sometimes echoes as text instead of
+# answering: {"name": "...", "parameters"/"arguments": ...} or {"tool": ...}.
+_TOOL_ECHO = re.compile(r'\{\s*"(?:name|tool)"\s*:')
+
+
+def _is_tool_echo(text: str) -> bool:
+    """True when the content is a tool-call JSON echo, not real speech."""
+    return bool(_TOOL_ECHO.search(text))
+
+
 def tool_calls_to_wire(tool_calls: list[ToolCall]) -> list[dict[str, Any]]:
     """Serialize ToolCall objects into the OpenAI wire shape for history."""
     return [
@@ -440,8 +450,16 @@ class VoiceSession:
             for _ in range(MAX_TOOL_ROUNDS):
                 response = await self._llm.complete(history, tools=self._tools.schemas())
                 if not response.tool_calls:
-                    if response.content:
+                    if response.content and not _is_tool_echo(response.content):
                         await on_final_delta(response.content)
+                    elif response.content:
+                        # The model echoed a tool call as text instead of
+                        # answering (e.g. {"name":"...","parameters":}). Never
+                        # speak raw JSON: force one plain, tool-free answer.
+                        if not emitted:
+                            async for event in self._llm.stream(history, tools=None):
+                                if isinstance(event, LLMTextDelta):
+                                    await on_final_delta(event.text)
                     break
                 await self._conversations.add_message(
                     self.session_id,
