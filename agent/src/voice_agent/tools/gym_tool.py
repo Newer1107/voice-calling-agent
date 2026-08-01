@@ -9,6 +9,7 @@ session pipeline, prompt and dashboard are unchanged.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from ..config import Settings
@@ -17,6 +18,15 @@ from ..logging_config import get_logger
 from .manager import ToolResult
 
 logger = get_logger("tools.gym")
+
+# Names the LLM fabricates when it does not know the member but insists on
+# calling a name-requiring tool. Rejected deterministically at the tool layer
+# so the conversation never acts on a made-up identity.
+_PLACEHOLDER_NAME = re.compile(
+    r"(^|[\s-])(john doe|jane doe|test|guest|customer|member|user|unknown|"
+    r"placeholder|doesn.?t know|don.?t know|not given|maya)(\s|$)",
+    re.IGNORECASE,
+)
 
 _TOOL_SPECS: list[dict[str, Any]] = [
     {
@@ -244,6 +254,13 @@ class GymTool:
 
     async def execute(self, args: dict[str, Any], session_id: str) -> ToolResult:
         """Run the DB handler; failures become ToolResult(ok=False)."""
+        name = str((args or {}).get("customerName") or (args or {}).get("name") or "")
+        if name and _PLACEHOLDER_NAME.search(name):
+            return ToolResult(
+                ok=False,
+                summary="Ask the member for their name first - the name given was not a real member name.",
+                error="placeholder member name",
+            )
         try:
             data = await getattr(self._db, self._handler)(args or {})
             return ToolResult(ok=True, summary=json.dumps(data), data={"data": data})
