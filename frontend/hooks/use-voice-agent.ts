@@ -174,6 +174,15 @@ export function useVoiceAgent() {
     [dismissError],
   );
 
+  // When the user barge-ins, the agent cuts its reply short and never emits
+  // message.done for it — mark any streaming AI message as done so the
+  // transcript doesn't sit on an eternal typing indicator.
+  const finalizeIncompleteAi = useCallback(() => {
+    setAiMessages((prev) =>
+      prev.some((m) => !m.done) ? prev.map((m) => (m.done ? m : { ...m, done: true })) : prev,
+    );
+  }, []);
+
   // Learn the session id from the first inbound event; fetch past history once.
   const learnSession = useCallback((sid: string) => {
     if (!sid || sessionIdRef.current === sid) return;
@@ -255,6 +264,7 @@ export function useVoiceAgent() {
         }
         case "transcript.partial": {
           const text = event.payload.text;
+          finalizeIncompleteAi();
           setUserTranscript((prev) => {
             const last = prev[prev.length - 1];
             if (last && !last.final) {
@@ -268,6 +278,7 @@ export function useVoiceAgent() {
         }
         case "transcript.final": {
           const text = event.payload.text;
+          finalizeIncompleteAi();
           if (!text.trim()) break;
           setUserTranscript((prev) => {
             const last = prev[prev.length - 1];
@@ -399,7 +410,7 @@ export function useVoiceAgent() {
           break;
       }
     },
-    [learnSession, pushError],
+    [learnSession, pushError, finalizeIncompleteAi],
   );
 
   const handleStatusChange = useCallback(
@@ -500,9 +511,10 @@ export function useVoiceAgent() {
   const startPushToTalk = useCallback(() => {
     if (status !== "connected") return;
     lastActivityRef.current = Date.now();
+    finalizeIncompleteAi();
     setPttHeld(true);
     roomRef.current?.publishClientMessage("client.ptt.start", {}, sessionIdRef.current);
-  }, [status]);
+  }, [status, finalizeIncompleteAi]);
 
   const stopPushToTalk = useCallback(() => {
     if (!pttHeld) return;

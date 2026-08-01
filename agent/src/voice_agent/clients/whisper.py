@@ -105,6 +105,8 @@ class WhisperClient:
             self._audio_buffer.clear()
             self._buffer_ms = 0
             self._last_partial_ms = 0
+            # Tells the session a new utterance began (used for barge-in).
+            events.append(SpeechEvent(kind="started", text=""))
         data = frame.data if isinstance(frame.data, (bytes, bytearray)) else bytes(frame.data)
         self._audio_buffer.extend(data)
         self._buffer_ms += int(1000.0 * frame.samples_per_channel / float(frame.sample_rate or 1))

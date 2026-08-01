@@ -96,7 +96,7 @@ export function ControlsPanel({
       <div className="flex flex-col items-center gap-4 py-1">
         <button
           type="button"
-          disabled={!connected || !micEnabled || speaking}
+          disabled={!connected || !micEnabled}
           onPointerDown={(e) => {
             e.currentTarget.setPointerCapture(e.pointerId);
             onStartPtt();

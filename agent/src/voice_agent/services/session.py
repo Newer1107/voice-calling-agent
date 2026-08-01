@@ -142,6 +142,11 @@ class VoiceSession:
         self._play_lock = asyncio.Lock()  # serializes TTS playback across concurrent turns
         self._pending_finals: deque[str] = deque()
         self._sentence_buf: list[str] = []
+        # The in-flight agent turn runs as its own task so an interrupt can
+        # cancel it; the TTS player is tracked separately because stopping the
+        # audio must happen before (and independently of) cancelling the LLM.
+        self._turn_task: asyncio.Task | None = None
+        self._tts_task: asyncio.Task | None = None
         self._closed = False
         self._ptt_active = False
         self._vad_enabled = settings.vad_enabled
@@ -249,27 +254,64 @@ class VoiceSession:
     async def _on_speech(self, speech: SpeechEvent) -> None:
         if self._closed:
             return
+        if speech.kind == "started":
+            await self._interrupt()
+            return
         if speech.kind == "partial":
             await self._events.transcript_partial(self.session_id, speech.text)
             return
         await self._events.transcript_final(self.session_id, speech.text, confidence=speech.confidence, language=speech.language)
         logger.info("user speech", extra={"event": "user_speech", "session_id": self.session_id, "text": speech.text})
-        await self._handle_final(speech.text)
+        self._handle_final(speech.text)
 
-    async def _handle_final(self, text: str) -> None:
-        """Run one agent turn; queue the utterance while the turn lock is held."""
-        if self._turn_lock.locked():
+    def _handle_final(self, text: str) -> None:
+        """Start one agent turn as a task; queue input while a turn runs.
+
+        Turns are detached so an interrupt can cancel them and the input /
+        inbound loops never block on playback.
+        """
+        if self._closed:
+            return
+        if self._turn_lock.locked() or self._turn_task is not None:
             self._pending_finals.append(text)
             logger.debug("queued input during agent turn", extra={"event": "input.queued", "session_id": self.session_id})
             return
-        await self._handle_turn(text)
+        self._turn_task = asyncio.create_task(self._handle_turn(text))
 
     # -- agent turn ----------------------------------------------------------
     async def _handle_turn(self, text: str) -> None:
         """Run one turn, then drain anything queued while it held the lock."""
-        await self._run_turn(text)
-        while self._pending_finals and not self._closed:
-            await self._run_turn(self._pending_finals.popleft())
+        try:
+            await self._run_turn(text)
+            while self._pending_finals and not self._closed:
+                await self._run_turn(self._pending_finals.popleft())
+        finally:
+            self._turn_task = None
+
+    async def _interrupt(self) -> None:
+        """Barge in: stop the in-flight turn so the user's new input wins.
+
+        Order matters: kill the TTS player first (silence now), flush any
+        frames already queued in the audio source, then cancel the LLM/tool
+        turn. Anything the user says after this starts a fresh turn.
+        """
+        if self._tts_task is not None and not self._tts_task.done():
+            self._tts_task.cancel()
+            await asyncio.gather(self._tts_task, return_exceptions=True)
+            self._tts_task = None
+        if self._audio_source is not None:
+            try:
+                self._audio_source.clear_queue()
+            except Exception:
+                pass
+        if self._turn_task is not None and not self._turn_task.done():
+            self._turn_task.cancel()
+            await asyncio.gather(self._turn_task, return_exceptions=True)
+        self._pending_finals.clear()
+        await self._events.state_speaking(self.session_id, active=False)
+        # A final that landed while the old turn was unwinding must still run.
+        if self._pending_finals and not self._closed:
+            self._turn_task = asyncio.create_task(self._handle_turn(self._pending_finals.popleft()))
 
     async def _run_turn(self, text: str) -> None:
         """One agent turn: think under the lock; TTS plays inside _agent_loop."""
@@ -320,6 +362,7 @@ class VoiceSession:
 
         tts_queue: asyncio.Queue[str | None] = asyncio.Queue()
         tts_task = asyncio.create_task(self._tts_player(tts_queue))
+        self._tts_task = tts_task
 
         async def on_final_delta(delta: str) -> None:
             delta = sanitize_spoken_text(delta)
@@ -350,8 +393,10 @@ class VoiceSession:
                         if isinstance(event, LLMTextDelta):
                             await on_final_delta(event.text)
         finally:
-            await tts_queue.put(None)
-            await tts_task
+            if not tts_task.done():
+                await tts_queue.put(None)
+                await asyncio.gather(tts_task, return_exceptions=True)
+            self._tts_task = None
 
         if not emitted:
             return None
@@ -520,6 +565,7 @@ class VoiceSession:
     async def _on_client_message(self, message: ClientMessage) -> None:
         if message.type == "client.ptt.start":
             self._ptt_active = True
+            await self._interrupt()
             await self._events.state_listening(self.session_id, active=True, source="ptt")
         elif message.type == "client.ptt.stop":
             was_active = self._ptt_active
