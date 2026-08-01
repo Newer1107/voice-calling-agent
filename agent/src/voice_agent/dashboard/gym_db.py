@@ -521,6 +521,18 @@ class GymDB:
             "status": "pending", "price": TIER_PRICES.get(member["tier"], "39.00 GBP"),
         }
 
+    async def request_callback(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Queue a callback request for the front desk when the agent can't help."""
+        name = str(args.get("customerName") or "")
+        reason = str(args.get("reason") or "member requested a call back")
+        request_id = f"REQ-{random.randint(1000, 9999)}"
+        await self._run(
+            "INSERT INTO staff_requests (request_id, member_name, request_type, details, status) "
+            "VALUES ($1,$2,'callback',$3,'pending')",
+            request_id, name, reason,
+        )
+        return {"requestId": request_id, "member": name, "status": "pending", "reason": reason}
+
     async def get_membership_plans(self, args: dict[str, Any]) -> dict[str, Any]:
         """All membership tiers with prices and perks, for the plans tool."""
         rows = await self._fetch(

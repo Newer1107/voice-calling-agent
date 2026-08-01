@@ -44,6 +44,33 @@ def build_dashboard_router(settings: Settings, hub: DashboardHub, db: DashboardD
     async def broadcast_system() -> None:
         hub.publish("system.status", await check_system())
 
+    # -- recording lookup ----------------------------------------------------
+    async def recording_url_for(room_name: str | None) -> str | None:
+        """Find the LiveKit Cloud recording URL for a room, if one exists."""
+        if not room_name:
+            return None
+        try:
+            from livekit.api import EgressStatus, LiveKitAPI, ListEgressRequest
+
+            api = LiveKitAPI(settings.livekit_url, settings.livekit_api_key, settings.livekit_api_secret)
+            try:
+                req = ListEgressRequest(room_name=room_name)
+                res = await api.egress.list_egress(req)
+            finally:
+                await api.aclose()
+            for egress in res.items or []:
+                if egress.status in (EgressStatus.EGRESS_COMPLETE, EgressStatus.EGRESS_ACTIVE):
+                    for file_info in egress.file_results or []:
+                        # FileInfo.location is the full storage URL; filename
+                        # is a fallback for egresses with no location set.
+                        if file_info.location:
+                            return file_info.location
+                        if file_info.filename:
+                            return file_info.filename
+            return None
+        except Exception:
+            return None
+
     # -- REST ----------------------------------------------------------------
     @router.get("/dashboard/overview")
     async def dashboard_overview() -> dict[str, Any]:
@@ -58,6 +85,7 @@ def build_dashboard_router(settings: Settings, hub: DashboardHub, db: DashboardD
         detail = await db.conversation_detail(conversation_id)
         if detail is None:
             return JSONResponse(status_code=404, content={"detail": "conversation not found"})
+        detail["recordingUrl"] = await recording_url_for(detail.get("roomName"))
         return detail
 
     @router.get("/dashboard/appointments")

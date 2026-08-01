@@ -23,6 +23,7 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS conversations (
   id TEXT PRIMARY KEY,
   customer_name TEXT,
+  room_name TEXT,
   started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   finished_at TIMESTAMPTZ,
   status TEXT NOT NULL DEFAULT 'active',
@@ -128,9 +129,10 @@ class DashboardDB:
             await conn.close()
 
     # -- writes (called from the session pipeline) --------------------------
-    async def conversation_started(self, conversation_id: str) -> None:
+    async def conversation_started(self, conversation_id: str, room_name: str | None = None) -> None:
         await self._run(
-            "INSERT INTO conversations (id) VALUES ($1) ON CONFLICT (id) DO NOTHING", conversation_id
+            "INSERT INTO conversations (id, room_name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING",
+            conversation_id, room_name,
         )
 
     async def conversation_message(self, conversation_id: str, role: str, text: str) -> None:
@@ -276,7 +278,7 @@ class DashboardDB:
     async def conversation_detail(self, conversation_id: str) -> dict[str, Any] | None:
         rows = await self._fetch(
             """
-            SELECT c.id, c.customer_name, c.started_at, c.finished_at, c.status, c.duration_sec,
+            SELECT c.id, c.customer_name, c.room_name, c.started_at, c.finished_at, c.status, c.duration_sec,
                    c.summary, c.outcome, c.messages::text AS messages,
                    (SELECT COALESCE(jsonb_agg(DISTINCT t.tool), '[]'::jsonb)::text
                     FROM tool_executions t WHERE t.conversation_id = c.id) AS tools
@@ -312,6 +314,7 @@ class DashboardDB:
         return {
             "id": r["id"],
             "customerName": r.get("customer_name"),
+            "roomName": r.get("room_name"),
             "startedAt": _iso(r["started_at"]),
             "finishedAt": _iso(r.get("finished_at")),
             "status": r.get("status"),
@@ -386,19 +389,27 @@ class DashboardDB:
         return result
 
     async def analytics(self) -> dict[str, Any]:
-        overview = await self.overview()
         tool_rows = await self._fetch("SELECT tool, count(*) AS c FROM tool_executions GROUP BY tool ORDER BY c DESC")
         peak_rows = await self._fetch(
             "SELECT EXTRACT(hour FROM started_at)::int AS hour, count(*) AS c "
             "FROM conversations GROUP BY 1 ORDER BY 1"
         )
+        # Satisfaction is derived from real call outcomes (ok vs failed tool
+        # calls), not a static mock number.
+        conv = await self._fetchrow(
+            "SELECT count(*) AS total, count(*) FILTER (WHERE status='finished' AND outcome='ok') AS ok "
+            "FROM conversations"
+        )
+        total = int(conv["total"] or 0)
+        ok = int(conv["ok"] or 0)
+        satisfaction = round((ok / total) * 100, 1) if total else 0.0
         return {
             "callsPerDay": await self._daily_counts("conversations", "started_at", 14),
             "appointments": await self._daily_counts("appointments", "created_at", 14),
             "orders": await self._daily_counts("orders", "created_at", 14),
             "toolUsage": [{"tool": r["tool"], "count": int(r["c"])} for r in tool_rows],
             "durations": await self._daily_durations(14),
-            "satisfaction": round(min(99.0, 72.0 + overview["aiSuccessRate"] * 0.25), 1),
+            "satisfaction": satisfaction,
             "peakHours": [{"hour": int(r["hour"]), "count": int(r["c"])} for r in peak_rows],
         }
 

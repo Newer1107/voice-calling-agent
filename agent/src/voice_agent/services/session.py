@@ -177,7 +177,7 @@ class VoiceSession:
         await self._events.welcome(self.session_id, WELCOME_MESSAGE)
         self._started_at = time.monotonic()
         self._emit("conversation.started", {"conversationId": self.session_id, "startedAt": _now_iso()})
-        await self._persist(lambda: self._db.conversation_started(self.session_id))
+        await self._persist(lambda: self._db.conversation_started(self.session_id, getattr(self._room, "name", None)))
         # Not actually listening until PTT is held (or VAD is on) — report the real gate.
         await self._events.state_listening(
             self.session_id,

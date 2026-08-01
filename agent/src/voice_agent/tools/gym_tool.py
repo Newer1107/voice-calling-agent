@@ -268,6 +268,24 @@ _TOOL_SPECS: list[dict[str, Any]] = [
         "handler": "list_classes",
     },
     {
+        "name": "requestCallback",
+        "description": (
+            "Queue a callback request for a gym staff member. Call when the agent "
+            "cannot resolve the user's request (no tool fits, a tool keeps failing, "
+            "or the user asks for a human). It records the request for staff - tell "
+            "the member a staff member will call them back shortly."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "customerName": {"type": "string", "description": "Member's name"},
+                "reason": {"type": "string", "description": "Why the callback was requested"},
+            },
+            "required": ["customerName", "reason"],
+        },
+        "handler": "request_callback",
+    },
+    {
         "name": "sendEmail",
         "description": "Send an email. Call when the user wants to send, email, or message someone.",
         "parameters": {
