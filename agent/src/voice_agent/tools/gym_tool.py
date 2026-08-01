@@ -24,7 +24,8 @@ logger = get_logger("tools.gym")
 # so the conversation never acts on a made-up identity.
 _PLACEHOLDER_NAME = re.compile(
     r"(^|[\s-])(john doe|jane doe|test|guest|customer|member|user|unknown|"
-    r"placeholder|doesn.?t know|don.?t know|not given|maya)(\s|$)|"
+    r"placeholder|doesn.?t know|don.?t know|not given|maya|<nil>|\bnil\b|"
+    r"n/a|the user|the member|someone|anyone|everyone|him|her|them|they)(\s|$)|"
     r"(may i have|your name|what is|who is|please tell|ask the)",
     re.IGNORECASE,
 )
