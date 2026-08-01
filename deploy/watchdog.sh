@@ -21,10 +21,10 @@ if ! curl -sf -m 5 http://localhost:8090/health >/dev/null 2>&1; then
   echo "agent restarted: $(date)" >> /tmp/watchdog.log
 fi
 
-# 3) Postgres
-if ! "$PGBIN/pg_ctl" -D "$HOME/pgdata" status >/dev/null 2>&1; then
-  "$PGBIN/pg_ctl" -D "$HOME/pgdata" -l /tmp/pg.log -w start >/dev/null 2>&1
-  echo "postgres restarted: $(date)" >> /tmp/watchdog.log
+# 3) Postgres (Docker container)
+if ! bash -c "echo rooor | sudo -S docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'voice-postgres'"; then
+  bash -c "echo rooor | sudo -S docker start voice-postgres" >/dev/null 2>&1
+  echo "voice-postgres restarted: $(date)" >> /tmp/watchdog.log
 fi
 
 # 4) TTS wrapper

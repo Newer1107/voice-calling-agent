@@ -6,11 +6,15 @@ export HOME=${HOME:-/home/raunak}
 export LD_LIBRARY_PATH=$HOME/pgsetup/usr/lib/x86_64-linux-gnu:$HOME/pgsetup/usr/lib/postgresql/18/lib
 PGBIN=$HOME/pgsetup/usr/lib/postgresql/18/bin
 
-# PostgreSQL (user-space install, no auto-start on its own)
-if [ -x "$PGBIN/pg_ctl" ] && ! "$PGBIN/pg_ctl" -D "$HOME/pgdata" status >/dev/null 2>&1; then
-  "$PGBIN/pg_ctl" -D "$HOME/pgdata" -l /tmp/pg.log -w start >/dev/null 2>&1
-  echo "postgres started"
+# PostgreSQL (Docker container, restart=unless-stopped — just ensure it is up)
+if ! bash -c "echo rooor | sudo -S docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'voice-postgres'"; then
+  bash -c "echo rooor | sudo -S docker start voice-postgres" >/dev/null 2>&1
+  echo "voice-postgres container started"
 fi
+for i in $(seq 1 15); do
+  bash -c "echo rooor | sudo -S docker exec voice-postgres pg_isready -U postgres" >/dev/null 2>&1 && break
+  sleep 2
+done
 
 # TTS wrapper
 tmux kill-session -t tts 2>/dev/null

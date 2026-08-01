@@ -1,0 +1,226 @@
+"""DB-backed gym tools: one OpenAI function per live Postgres operation.
+
+Replaces the n8n webhook mock: tool execution now reads from and writes to the
+seeded gym database (members, memberships, bookings, products, orders) in real
+time. Request/response envelopes are identical to the webhook contract, so the
+session pipeline, prompt and dashboard are unchanged.
+"""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+
+from ..config import Settings
+from ..dashboard.gym_db import GymDB
+from ..logging_config import get_logger
+from .manager import ToolResult
+
+logger = get_logger("tools.gym")
+
+_TOOL_SPECS: list[dict[str, Any]] = [
+    {
+        "name": "bookAppointment",
+        "description": (
+            "Book a gym session for a member. Call when the user wants to book, reserve, "
+            "or schedule a class or personal training session."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "customerName": {"type": "string", "description": "Member's name"},
+                "session": {"type": "string", "description": "Class or session name, e.g. Yoga Basics"},
+                "date": {"type": "string", "description": "Date in ISO format, e.g. 2026-08-05. Omit and it defaults to today."},
+                "time": {"type": "string", "description": "Time in 24h HH:MM, e.g. 18:30. Omit and it defaults to 18:00."},
+            },
+            "required": ["customerName", "session"],
+        },
+        "handler": "book_appointment",
+    },
+    {
+        "name": "bookSpaAppointment",
+        "description": (
+            "Book a spa treatment at the gym spa (Swedish massage, deep tissue massage, "
+            "sauna session, aromatherapy facial, hot stone therapy). Call when the user "
+            "wants to book, reserve, or schedule any spa, massage, sauna, or facial."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "customerName": {"type": "string", "description": "Member's name"},
+                "service": {"type": "string", "description": "Spa treatment name, e.g. Swedish Massage"},
+                "date": {"type": "string", "description": "Date in ISO format, e.g. 2026-08-05. Omit and it defaults to today."},
+                "time": {"type": "string", "description": "Time in 24h HH:MM, e.g. 16:00. Omit and it defaults to 16:00."},
+            },
+            "required": ["customerName", "service"],
+        },
+        "handler": "book_spa",
+    },
+    {
+        "name": "cancelBooking",
+        "description": (
+            "Cancel a member's gym class, personal training or spa booking. "
+            "Call when the user wants to cancel, remove, or reschedule a booking, "
+            "appointment, class, massage or spa session - including 'cancel all "
+            "my bookings' (pass the member's name)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "customerName": {"type": "string", "description": "Member's name"},
+                "session": {"type": "string", "description": "Class, training or spa session name, e.g. Personal Training or Swedish Massage"},
+                "bookingId": {"type": "string", "description": "Booking id if the user has one, e.g. GYM-3482 or SPA-1909"},
+                "date": {"type": "string", "description": "Date in ISO format, e.g. 2026-08-05. Omit and it cancels the confirmed bookings."},
+            },
+            "required": ["customerName"],
+        },
+        "handler": "cancel_bookings",
+    },
+    {
+        "name": "getMembership",
+        "description": (
+            "Detailed membership renewal info: tier, status, expiry date, days remaining "
+            "and renewal price. Call for renewal or upgrade pricing questions. Use "
+            "lookupCustomer for the full member profile when a name is first given."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Member name"},
+                "email": {"type": "string", "description": "Member email"},
+            },
+            "description": "Provide at least one of name or email",
+        },
+        "handler": "get_membership",
+    },
+    {
+        "name": "upgradeMembership",
+        "description": (
+            "Upgrade a member's gym membership to a higher tier (Gold or Platinum). "
+            "Call when the user wants to upgrade, change, or switch their membership plan "
+            "or tier. Never claim an upgrade succeeded without calling this tool."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "customerName": {"type": "string", "description": "Member's name"},
+                "tier": {"type": "string", "description": "Target tier: Gold or Platinum"},
+            },
+            "required": ["customerName", "tier"],
+        },
+        "handler": "upgrade_membership",
+    },
+    {
+        "name": "lookupCustomer",
+        "description": (
+            "Load a member's complete profile: membership tier, status, expiry date, "
+            "visits this month and upcoming bookings. Call the moment a member gives "
+            "their name - it is how you know everything about them without asking."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Member name"},
+                "email": {"type": "string", "description": "Member email"},
+            },
+            "description": "Provide at least one of name or email",
+        },
+        "handler": "lookup_customer",
+    },
+    {
+        "name": "createOrder",
+        "description": (
+            "Order gym merchandise (protein shakes, resistance bands, gym tees, etc.). "
+            "Call when the user wants to buy or order gym products."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "customerName": {"type": "string", "description": "Member's name"},
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string", "description": "Product name"},
+                            "quantity": {"type": "integer", "description": "How many"},
+                        },
+                        "required": ["name", "quantity"],
+                    },
+                    "description": "Items to order",
+                },
+            },
+            "required": ["customerName", "items"],
+        },
+        "handler": "create_order",
+    },
+    {
+        "name": "checkInventory",
+        "description": (
+            "Check whether gym equipment or merchandise is in stock. "
+            "Call when the user asks about availability of a product or equipment."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "productName": {"type": "string", "description": "Product or equipment name"},
+                "productId": {"type": "string", "description": "Product id if known"},
+            },
+            "description": "Provide at least one of productName or productId",
+        },
+        "handler": "check_inventory",
+    },
+    {
+        "name": "sendEmail",
+        "description": "Send an email. Call when the user wants to send, email, or message someone.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "to": {"type": "string", "description": "Recipient email"},
+                "subject": {"type": "string", "description": "Email subject"},
+                "body": {"type": "string", "description": "Email body"},
+            },
+            "required": ["to", "subject", "body"],
+        },
+        "handler": "send_email",
+    },
+]
+
+
+class GymTool:
+    """One DB-backed tool: schema for the LLM plus a GymDB handler."""
+
+    def __init__(self, settings: Settings, spec: dict[str, Any]) -> None:
+        self.settings = settings
+        self.name = spec["name"]
+        self.description = spec["description"]
+        self._parameters = spec["parameters"]
+        self._handler = spec["handler"]
+        self._db = GymDB(settings)
+
+    def schema(self) -> dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self._parameters,
+            },
+        }
+
+    async def execute(self, args: dict[str, Any], session_id: str) -> ToolResult:
+        """Run the DB handler; failures become ToolResult(ok=False)."""
+        try:
+            data = await getattr(self._db, self._handler)(args or {})
+            return ToolResult(ok=True, summary=json.dumps(data), data={"data": data})
+        except Exception as exc:
+            logger.warning("gym tool failed", extra={"event": "tool.failed", "tool": self.name, "error": str(exc)})
+            return ToolResult(ok=False, summary=str(exc), error=str(exc))
+
+    async def aclose(self) -> None:
+        pass
+
+
+def build_default_tools(settings: Settings) -> list[GymTool]:
+    """The nine gym tools, backed by the live Postgres gym database."""
+    return [GymTool(settings, spec) for spec in _TOOL_SPECS]

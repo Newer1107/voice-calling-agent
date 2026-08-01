@@ -56,8 +56,8 @@ class ToolManager:
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "ToolManager":
-        """Build the default registry from the configured webhook base URL."""
-        from .webhook_tool import build_default_tools  # deferred: breaks manager<->webhook_tool cycle
+        """Build the default registry from the configured backend."""
+        from .gym_tool import build_default_tools  # live Postgres gym database
 
         return cls(build_default_tools(settings))
 

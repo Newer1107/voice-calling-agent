@@ -81,8 +81,8 @@ class Settings(BaseSettings):
     # --- Dashboard (realtime business console) ------------------------------
     enable_dashboard: bool = Field(default=True, description="Serve /dashboard/* and /ws/dashboard")
     dashboard_database_url: str = Field(
-        default="postgresql://raunak@127.0.0.1:5432/voice_dashboard",
-        description="PostgreSQL DSN for dashboard persistence (asyncpg)",
+        default="postgresql://postgres:postgres@127.0.0.1:5432/voice_dashboard",
+        description="PostgreSQL DSN for dashboard + gym persistence (asyncpg)",
     )
 
     # --- Computed helpers ----------------------------------------------------
