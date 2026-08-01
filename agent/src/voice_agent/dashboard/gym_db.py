@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS gym_classes (
   instructor TEXT,
   capacity INT DEFAULT 20
 );
+ALTER TABLE gym_classes ADD COLUMN IF NOT EXISTS capacity INT DEFAULT 20;
 CREATE TABLE IF NOT EXISTS spa_services (
   id SERIAL PRIMARY KEY,
   name TEXT NOT NULL,
