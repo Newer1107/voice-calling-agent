@@ -91,7 +91,7 @@ flowchart TB
     end
 
     subgraph AI["AI Server — Ollama"]
-        LLM["qwen2.5-coder:7b"]
+        LLM["qwen2.5:3b"]
     end
 
     subgraph N8N["Home Server — n8n (mock business logic)"]
@@ -208,7 +208,7 @@ sequenceDiagram
    `transcript.final` when the utterance ends.
 
 4. **Think** — `VoiceSession` runs a turn: it appends the user text to
-   conversation memory and calls Ollama (`qwen2.5-coder:7b`) with the full
+   conversation memory and calls Ollama (`qwen2.5:3b`) with the full
    history plus the registered tool schemas. The model either answers directly
    or returns a tool call (written as JSON text, which the client parses).
 

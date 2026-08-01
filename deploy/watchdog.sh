@@ -11,7 +11,7 @@ AGENT_DIR=$HOME/voice-calling-agent/agent
 #    causing a slow cold-start on the first morning request).
 curl -sf -m 20 -X POST http://175.175.0.254:11434/api/generate \
   -H 'Content-Type: application/json' \
-  -d '{"model":"qwen2.5-coder:7b","prompt":"ping","stream":false,"keep_alive":-1}' \
+  -d '{"model":"qwen2.5:3b","prompt":"ping","stream":false,"keep_alive":-1}' \
   -o /dev/null 2>/dev/null || true
 
 # 2) Agent health
