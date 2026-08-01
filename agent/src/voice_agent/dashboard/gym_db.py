@@ -8,6 +8,7 @@ data and read/written LIVE by the agent's tools.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import random
 from datetime import date, datetime, timezone, timedelta
@@ -83,6 +84,12 @@ CREATE TABLE IF NOT EXISTS gym_orders (
 TIER_PRICES = {"Silver": "39.00 GBP", "Gold": "59.00 GBP", "Platinum": "99.00 GBP"}
 
 _gym_ready = False
+# Serializes the one-time seed: the dashboard API and the tool backend can
+# both open a connection on the same process start, and without a lock two
+# concurrent seeds would TRUNCATE/insert over each other (duplicate key 500s,
+# and a seed that fails mid-way leaves _gym_ready unset so every request
+# retries it).
+_seed_lock = asyncio.Lock()
 
 
 def _days_from_today(days: int) -> str:
@@ -99,8 +106,12 @@ async def ensure_gym(conn: asyncpg.Connection) -> None:
     await conn.execute(_SCHEMA)
     if _gym_ready:
         return
-    await _seed(conn)
-    _gym_ready = True
+    async with _seed_lock:
+        if _gym_ready:
+            return
+        async with conn.transaction():
+            await _seed(conn)
+        _gym_ready = True
 
 
 async def _seed(conn: asyncpg.Connection) -> None:
