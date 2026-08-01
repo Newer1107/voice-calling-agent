@@ -105,7 +105,10 @@ class DeepgramClient:
         if self._stream is not None or self._fatal_error:
             return
         try:
-            await asyncio.to_thread(self._build_stt)
+            # Construction MUST stay on the main thread: livekit's
+            # Plugin.register_plugin rejects worker threads, and this worker
+            # runs jobs on the main-thread event loop.
+            self._build_stt()
             stream = self._stt.stream(language=self._effective_language())
             self._stream = stream
             self._queue = asyncio.Queue()

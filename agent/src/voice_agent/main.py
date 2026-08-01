@@ -164,6 +164,19 @@ async def _wait_for_participant(room: rtc.Room, timeout: float = 30.0) -> rtc.Re
         room.off("participant_connected", _on_join)
 
 
+def _ensure_deepgram_registered(settings: Settings) -> None:
+    """Import the deepgram plugin on the MAIN thread.
+
+    livekit.plugins.deepgram registers itself at module import time
+    (Plugin.register_plugin), which raises unless called from the main
+    thread. Jobs run on worker threads (JobExecutorType.THREAD), so the
+    import must happen here, before any job starts; the client's own import
+    is then a cached no-op.
+    """
+    if settings.stt_provider == "deepgram":
+        from livekit.plugins import deepgram  # noqa: F401
+
+
 def _build_stt(settings: Settings) -> STTClient:
     """Return the STT backend selected by STT_PROVIDER.
 
@@ -231,6 +244,7 @@ async def prewarm_async(_proc: Any) -> None:
     """0.x async prewarm hook: start the in-process API before the first job."""
     settings = Settings()
     setup_logging(settings.agent_log_level, settings.agent_log_format)
+    _ensure_deepgram_registered(settings)
     _start_api_in_thread(settings)
     if settings.stt_provider != "deepgram":
         _warm_stt_in_thread(settings)
@@ -245,6 +259,7 @@ def prewarm(_proc: Any) -> None:
     """
     settings = Settings()
     setup_logging(settings.agent_log_level, settings.agent_log_format)
+    _ensure_deepgram_registered(settings)
     _start_api_in_thread(settings)
     if settings.stt_provider != "deepgram":
         _warm_stt_in_thread(settings)
@@ -286,6 +301,7 @@ def _build_worker_options(settings: Settings) -> WorkerOptions:
 def main() -> None:
     settings = Settings()
     setup_logging(settings.agent_log_level, settings.agent_log_format)
+    _ensure_deepgram_registered(settings)
     if "prewarm_fnc" not in inspect.signature(WorkerOptions.__init__).parameters:
         _start_api_in_thread(settings)
     logger.info(

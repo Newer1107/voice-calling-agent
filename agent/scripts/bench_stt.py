@@ -82,6 +82,7 @@ async def run_phrase(phrase: str, room_name: str, finals: dict[str, tuple[str, f
     wav = synth(phrase)
     pcm, rate, channels = wav_to_pcm16(wav)
     room = rtc.Room()
+    agent_ready = asyncio.Event()
 
     def on_data(data: rtc.DataReceivedEvent) -> None:
         try:
@@ -91,6 +92,8 @@ async def run_phrase(phrase: str, room_name: str, finals: dict[str, tuple[str, f
         if isinstance(msg, dict) and msg.get("type") == "transcript.final":
             text = (msg.get("payload") or {}).get("text", "")
             finals[msg.get("sessionId", "")] = (text, time.monotonic())
+        elif isinstance(msg, dict) and str(msg.get("type", "")).startswith(("agent.", "state.")):
+            agent_ready.set()
 
     room.on("data_received", on_data)
     await room.connect("wss://project-y6rhyuj0.livekit.cloud", get_token(room_name))
@@ -99,6 +102,14 @@ async def run_phrase(phrase: str, room_name: str, finals: dict[str, tuple[str, f
     await room.local_participant.publish_track(
         track, rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_MICROPHONE)
     )
+    # Wait for the agent to subscribe + open its input stream, so the first
+    # audio frames aren't dropped at the WebRTC transport level (which
+    # truncates the leading word of every phrase).
+    try:
+        await asyncio.wait_for(agent_ready.wait(), timeout=15.0)
+    except asyncio.TimeoutError:
+        pass
+    await asyncio.sleep(0.5)
     chunk = rate * channels * 2 // 20
     for i in range(0, len(pcm), chunk):
         piece = pcm[i : i + chunk]
