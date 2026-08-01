@@ -137,6 +137,9 @@ class OllamaClient:
             "messages": [{"role": "system", "content": system_prompt}, *history],
             "temperature": self.settings.ollama_temperature,
             "max_tokens": self.settings.ollama_max_tokens,
+            # keep the model loaded on the AI server so idle periods (e.g.
+            # overnight) never cause a slow cold-start on the first request
+            "keep_alive": -1,
             "stream": True,
         }
         if tools:
@@ -192,6 +195,8 @@ class OllamaClient:
             "messages": [{"role": "system", "content": system_prompt}, *history],
             "temperature": self.settings.ollama_temperature,
             "max_tokens": self.settings.ollama_max_tokens,
+            # keep the model loaded on the AI server (no cold-start lag)
+            "keep_alive": -1,
             "stream": False,
         }
         if tools:

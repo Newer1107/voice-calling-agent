@@ -98,7 +98,8 @@ class DashboardDB:
         self.dsn = settings.dashboard_database_url
 
     async def _conn(self) -> asyncpg.Connection:
-        conn = await asyncpg.connect(self.dsn)
+        # Short connect timeout: a down DB must never stall a conversation turn.
+        conn = await asyncpg.connect(self.dsn, timeout=3.0)
         await conn.execute(_SCHEMA)
         return conn
 
