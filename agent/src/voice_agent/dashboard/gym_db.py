@@ -79,9 +79,30 @@ CREATE TABLE IF NOT EXISTS gym_orders (
   total NUMERIC DEFAULT 0,
   created_at TIMESTAMPTZ DEFAULT now()
 );
+CREATE TABLE IF NOT EXISTS membership_plans (
+  id SERIAL PRIMARY KEY,
+  tier TEXT UNIQUE NOT NULL,
+  price NUMERIC NOT NULL,
+  perks TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS staff_requests (
+  id SERIAL PRIMARY KEY,
+  request_id TEXT UNIQUE,
+  member_name TEXT NOT NULL,
+  request_type TEXT NOT NULL,
+  details TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  created_at TIMESTAMPTZ DEFAULT now()
+);
 """
 
 TIER_PRICES = {"Silver": "39.00 GBP", "Gold": "59.00 GBP", "Platinum": "99.00 GBP"}
+
+TIER_PERKS = {
+    "Silver": "Gym access, group classes, and one guest pass per month.",
+    "Gold": "Everything in Silver, plus spa access (sauna) and two personal training sessions per month.",
+    "Platinum": "Everything in Gold, plus unlimited personal training, full spa, priority booking, locker and four guest passes.",
+}
 
 _gym_ready = False
 # Serializes the one-time seed: the dashboard API and the tool backend can
@@ -118,8 +139,8 @@ async def _seed(conn: asyncpg.Connection) -> None:
     # Deterministic mockup: reset the gym data to the seeded state on every
     # process start (module `_gym_ready` guard prevents re-seeding).
     await conn.execute(
-        "TRUNCATE members, memberships, gym_classes, spa_services, bookings, products, gym_orders "
-        "RESTART IDENTITY CASCADE"
+        "TRUNCATE members, memberships, gym_classes, spa_services, bookings, products, gym_orders, "
+        "membership_plans, staff_requests RESTART IDENTITY CASCADE"
     )
     members = [
         ("Sarah", "sarah@gym.example", "555-0101", _days_from_today(-540), "Silver", "active", 31, 15, 620.0),
@@ -171,10 +192,26 @@ async def _seed(conn: asyncpg.Connection) -> None:
         ("Gym Tee", 24.99, 50, "Apparel"),
         ("Kettlebell 16kg", 49.99, 10, "Equipment"),
         ("Yoga Mat", 19.99, 30, "Equipment"),
+        ("Personal Training 5-Pack", 100.0, 20, "Add-on"),
+        ("Personal Training 10-Pack", 180.0, 15, "Add-on"),
+        ("Guest Day Pass", 15.0, 100, "Add-on"),
+        ("Locker Rental", 10.0, 50, "Add-on"),
+        ("Nutrition Coaching", 30.0, 30, "Add-on"),
+        ("Protein Shake Bundle", 12.5, 60, "Nutrition"),
+        ("Gym Hoodie", 34.99, 25, "Apparel"),
     ]:
         await conn.execute(
             "INSERT INTO products (name, price, stock, category) VALUES ($1,$2,$3,$4)",
             name, price, stock, category,
+        )
+    for tier, price, perks in [
+        ("Silver", 39.0, TIER_PERKS["Silver"]),
+        ("Gold", 59.0, TIER_PERKS["Gold"]),
+        ("Platinum", 99.0, TIER_PERKS["Platinum"]),
+    ]:
+        await conn.execute(
+            "INSERT INTO membership_plans (tier, price, perks) VALUES ($1,$2,$3) ON CONFLICT (tier) DO NOTHING",
+            tier, price, perks,
         )
     await conn.execute(
         "INSERT INTO bookings (booking_id, member_name, kind, service, date, time, status) VALUES "
@@ -337,20 +374,61 @@ class GymDB:
             await conn.close()
         return {"status": "cancelled", "refundEligible": True, "cancelled": int(count or 0)}
 
-    async def upgrade_membership(self, args: dict[str, Any]) -> dict[str, Any]:
+    async def request_upgrade(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Upgrade requests are queued for a staff member; tier is NOT changed."""
         name = str(args.get("customerName") or "")
         target = str(args.get("tier") or "Gold").capitalize()
         member = await self._member(name)
         if member is None:
             raise ValueError("No customer found")
-        previous = member["tier"]
+        if target not in TIER_PRICES:
+            raise ValueError(f"{target} is not a membership tier (Silver, Gold or Platinum)")
+        if target == member["tier"]:
+            raise ValueError(f"{name} is already on the {member['tier']} plan")
+        request_id = f"REQ-{random.randint(1000, 9999)}"
         await self._run(
-            "UPDATE memberships SET tier = $1 WHERE member_id = $2", target, member["id"]
+            "INSERT INTO staff_requests (request_id, member_name, request_type, details, status) "
+            "VALUES ($1,$2,'upgrade',$3,'pending')",
+            request_id, name, f"upgrade {member['tier']} -> {target}",
         )
         return {
-            "memberId": f"M-{member['id'] + 100}", "name": member["name"], "tier": target,
-            "previousTier": previous, "effectiveFrom": date.today().isoformat(),
-            "status": "upgraded", "price": TIER_PRICES.get(target, "59.00 GBP"),
+            "requestId": request_id, "member": name,
+            "currentTier": member["tier"], "requestedTier": target,
+            "status": "pending", "price": TIER_PRICES.get(target, "59.00 GBP"),
+        }
+
+    async def renew_membership(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Renewal requests are queued for a staff member; the plan is NOT renewed."""
+        name = str(args.get("customerName") or "")
+        member = await self._member(name)
+        if member is None:
+            raise ValueError("No customer found")
+        request_id = f"REQ-{random.randint(1000, 9999)}"
+        await self._run(
+            "INSERT INTO staff_requests (request_id, member_name, request_type, details, status) "
+            "VALUES ($1,$2,'renewal',$3,'pending')",
+            request_id, name, f"renew {member['tier']} (expires {member['expires_on']})",
+        )
+        return {
+            "requestId": request_id, "member": name,
+            "tier": member["tier"], "expiresOn": str(member["expires_on"]),
+            "status": "pending", "price": TIER_PRICES.get(member["tier"], "39.00 GBP"),
+        }
+
+    async def get_membership_plans(self, args: dict[str, Any]) -> dict[str, Any]:
+        """All membership tiers with prices and perks, for the plans tool."""
+        rows = await self._fetch(
+            "SELECT tier, price, perks FROM membership_plans ORDER BY price"
+        )
+        return {
+            "plans": [
+                {
+                    "tier": r["tier"],
+                    "price": f"{float(r['price']):.2f} GBP",
+                    "perks": r["perks"],
+                }
+                for r in rows
+            ]
         }
 
     async def create_order(self, args: dict[str, Any]) -> dict[str, Any]:

@@ -62,7 +62,8 @@ _TOOL_SPECS: list[dict[str, Any]] = [
             "Cancel a member's gym class, personal training or spa booking. "
             "Call when the user wants to cancel, remove, or reschedule a booking, "
             "appointment, class, massage or spa session - including 'cancel all "
-            "my bookings' (pass the member's name)."
+            "my bookings' (pass the member's name). This is the ONLY tool for "
+            "cancellations - do not use lookupCustomer for cancel requests."
         ),
         "parameters": {
             "type": "object",
@@ -96,9 +97,11 @@ _TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "upgradeMembership",
         "description": (
-            "Upgrade a member's gym membership to a higher tier (Gold or Platinum). "
-            "Call when the user wants to upgrade, change, or switch their membership plan "
-            "or tier. Never claim an upgrade succeeded without calling this tool."
+            "Queue a membership upgrade request for a gym staff member. Call when the user "
+            "wants to upgrade, change, or switch their membership plan or tier, OR asks to "
+            "pay for an upgrade or any membership payment. This tool only records the "
+            "request for staff - it does NOT change the membership. Never tell the user "
+            "the upgrade is done; say their request has been sent to the front desk staff."
         ),
         "parameters": {
             "type": "object",
@@ -108,7 +111,38 @@ _TOOL_SPECS: list[dict[str, Any]] = [
             },
             "required": ["customerName", "tier"],
         },
-        "handler": "upgrade_membership",
+        "handler": "request_upgrade",
+    },
+    {
+        "name": "renewMembership",
+        "description": (
+            "Queue a membership renewal request for a gym staff member. Call when the user "
+            "wants to renew, extend, or pay to renew their membership. This tool only "
+            "records the request for staff - it does NOT renew anything. Never tell the "
+            "user the renewal is done; say their request has been sent to the front desk staff."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "customerName": {"type": "string", "description": "Member's name"},
+            },
+            "required": ["customerName"],
+        },
+        "handler": "renew_membership",
+    },
+    {
+        "name": "getMembershipPlans",
+        "description": (
+            "List all IronPeak membership tiers (Silver, Gold, Platinum) with their monthly "
+            "prices and perks. Call whenever the user asks about membership options, plans, "
+            "prices, or what is included in a tier. Always quote prices from this tool - "
+            "never from memory."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {},
+        },
+        "handler": "get_membership_plans",
     },
     {
         "name": "lookupCustomer",

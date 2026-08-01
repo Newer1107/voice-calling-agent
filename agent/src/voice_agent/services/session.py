@@ -377,6 +377,7 @@ class VoiceSession:
             await on_delta(delta)
             await self._queue_sentences(tts_queue, delta)
 
+        final_text: str | None = None
         try:
             for _ in range(MAX_TOOL_ROUNDS):
                 response = await self._llm.complete(history, tools=self._tools.schemas())
@@ -400,23 +401,28 @@ class VoiceSession:
                             await on_final_delta(event.text)
         finally:
             if not tts_task.done():
-                await tts_queue.put(None)
+                try:
+                    await tts_queue.put(None)
+                except Exception:
+                    pass
                 await asyncio.gather(tts_task, return_exceptions=True)
             self._tts_task = None
+            # Persist inside the finally: a barge-in cancels the turn task while
+            # TTS plays, and the pre-finally location would skip the DB write,
+            # losing a reply that WAS spoken. The final text is fully assembled
+            # in `parts` by now, so record it even if playback was cut short.
+            if emitted:
+                text = sanitize_spoken_text("".join(parts))
+                self._last_reply = text
+                self._message_count += 1
+                self._emit("transcript.updated", {"conversationId": self.session_id, "role": "assistant", "text": text, "ts": _now_iso()})
+                await self._persist(lambda: self._db.conversation_message(self.session_id, "assistant", text))
+                await self._events.message_done(self.session_id, message_id, text)
+                if text:
+                    await self._conversations.add_message(self.session_id, ConversationMessage(role="assistant", content=text))
+                final_text = text or None
 
-        if not emitted:
-            return None
-        # Re-sanitize the assembled text: a JSON echo or markdown that arrived
-        # split across streamed deltas is only complete now.
-        text = sanitize_spoken_text("".join(parts))
-        self._last_reply = text
-        self._message_count += 1
-        self._emit("transcript.updated", {"conversationId": self.session_id, "role": "assistant", "text": text, "ts": _now_iso()})
-        await self._persist(lambda: self._db.conversation_message(self.session_id, "assistant", text))
-        await self._events.message_done(self.session_id, message_id, text)
-        if text:
-            await self._conversations.add_message(self.session_id, ConversationMessage(role="assistant", content=text))
-        return text or None
+        return final_text
 
     async def _queue_sentences(self, tts_queue: asyncio.Queue[str | None], delta: str) -> None:
         """Split incoming text into sentences and queue them for TTS playback."""
