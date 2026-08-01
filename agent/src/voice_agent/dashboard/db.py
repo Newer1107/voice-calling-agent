@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import asyncpg
@@ -114,6 +114,13 @@ class DashboardDB:
         conn = await self._conn()
         try:
             return await conn.fetch(sql, *args)
+        finally:
+            await conn.close()
+
+    async def _fetchrow(self, sql: str, *args: Any) -> asyncpg.Record | None:
+        conn = await self._conn()
+        try:
+            return await conn.fetchrow(sql, *args)
         finally:
             await conn.close()
 
@@ -380,6 +387,127 @@ class DashboardDB:
             f"GROUP BY 1 ORDER BY 1"
         )
         return [{"date": str(r["date"]), "avgSec": round(float(r["avg_sec"]))} for r in rows]
+
+    # -- rich statistics (gym business + conversations + tools) --------------
+    async def stats(self) -> dict[str, Any]:
+        today = date.today()
+        soon30 = today + timedelta(days=30)
+        soon7 = today + timedelta(days=7)
+
+        member_row = await self._fetchrow(
+            """SELECT count(*) AS total,
+                      COALESCE(sum(visits_this_month), 0) AS visits,
+                      count(*) FILTER (WHERE expires_on <= $1) AS expiring30,
+                      count(*) FILTER (WHERE expires_on <= $2) AS expiring7
+               FROM memberships""",
+            soon30, soon7,
+        )
+        tiers = await self._fetch(
+            "SELECT tier, count(*) AS c FROM memberships GROUP BY tier ORDER BY c DESC"
+        )
+        booking_row = await self._fetchrow(
+            """SELECT count(*) FILTER (WHERE status='confirmed' AND date >= $1) AS upcoming,
+                      count(*) FILTER (WHERE status='confirmed' AND date = $2) AS today,
+                      count(*) FILTER (WHERE status='confirmed' AND kind='spa') AS spa,
+                      count(*) FILTER (WHERE status='confirmed' AND kind='gym') AS gym
+               FROM bookings""",
+            today.isoformat(), today.isoformat(),
+        )
+        services = await self._fetch(
+            "SELECT service, count(*) AS c FROM bookings WHERE status='confirmed' GROUP BY service ORDER BY c DESC LIMIT 8"
+        )
+        order_row = await self._fetchrow(
+            """SELECT count(*) AS total, COALESCE(sum(total), 0) AS revenue, COALESCE(avg(total), 0) AS avg_value
+               FROM gym_orders"""
+        )
+        order_status = await self._fetch(
+            "SELECT status, count(*) AS c FROM gym_orders GROUP BY status ORDER BY c DESC"
+        )
+        inventory = await self._fetchrow(
+            "SELECT count(*) AS products, count(*) FILTER (WHERE stock = 0) AS out_of_stock FROM products"
+        )
+        low_stock = await self._fetch(
+            "SELECT name, stock FROM products WHERE stock <= 10 ORDER BY stock LIMIT 8"
+        )
+        conv_row = await self._fetchrow(
+            """SELECT count(*) AS total,
+                      count(*) FILTER (WHERE status='finished') AS finished,
+                      count(*) FILTER (WHERE status='finished' AND outcome='ok') AS ok,
+                      COALESCE(avg(duration_sec), 0) AS avg_duration,
+                      COALESCE(sum(message_count), 0) AS messages
+               FROM conversations"""
+        )
+        tool_row = await self._fetchrow(
+            """SELECT count(*) AS executions,
+                      count(*) FILTER (WHERE ok) AS ok,
+                      COALESCE(avg(duration_ms), 0) AS avg_latency
+               FROM tool_executions"""
+        )
+        tools_by_name = await self._fetch(
+            """SELECT tool, count(*) AS c, count(*) FILTER (WHERE ok) AS ok
+               FROM tool_executions GROUP BY tool ORDER BY c DESC"""
+        )
+        revenue = await self._fetchrow(
+            """SELECT COALESCE(sum(total) FILTER (WHERE created_at::date = $1), 0) AS today,
+                      COALESCE(sum(total) FILTER (WHERE created_at >= now() - interval '7 days'), 0) AS week,
+                      COALESCE(sum(total) FILTER (WHERE created_at >= date_trunc('month', now())), 0) AS month
+               FROM gym_orders""",
+            today,
+        )
+        peak_rows = await self._fetch(
+            "SELECT EXTRACT(hour FROM started_at)::int AS hour, count(*) AS c FROM conversations GROUP BY 1 ORDER BY c DESC LIMIT 6"
+        )
+
+        total_finished = int(conv_row["finished"] or 0)
+        tool_executions = int(tool_row["executions"] or 0)
+        return {
+            "members": {
+                "total": int(member_row["total"] or 0),
+                "byTier": [{"tier": r["tier"], "count": int(r["c"])} for r in tiers],
+                "expiringSoon30": int(member_row["expiring30"] or 0),
+                "expiringSoon7": int(member_row["expiring7"] or 0),
+                "totalVisits": int(member_row["visits"] or 0),
+            },
+            "bookings": {
+                "upcoming": int(booking_row["upcoming"] or 0),
+                "today": int(booking_row["today"] or 0),
+                "spa": int(booking_row["spa"] or 0),
+                "gym": int(booking_row["gym"] or 0),
+                "byService": [{"service": r["service"], "count": int(r["c"])} for r in services],
+            },
+            "orders": {
+                "total": int(order_row["total"] or 0),
+                "revenue": round(float(order_row["revenue"] or 0), 2),
+                "avgValue": round(float(order_row["avg_value"] or 0), 2),
+                "byStatus": [{"status": r["status"], "count": int(r["c"])} for r in order_status],
+            },
+            "inventory": {
+                "products": int(inventory["products"] or 0),
+                "lowStock": [{"name": r["name"], "stock": int(r["stock"])} for r in low_stock],
+                "outOfStock": int(inventory["out_of_stock"] or 0),
+            },
+            "conversations": {
+                "total": int(conv_row["total"] or 0),
+                "ok": int(conv_row["ok"] or 0),
+                "failed": int(conv_row["total"] or 0) - int(conv_row["finished"] or 0) + (
+                    int(conv_row["finished"] or 0) - int(conv_row["ok"] or 0)
+                ),
+                "avgDurationSec": round(float(conv_row["avg_duration"] or 0)),
+                "totalMessages": int(conv_row["messages"] or 0),
+            },
+            "tools": {
+                "executions": tool_executions,
+                "successRate": round(int(tool_row["ok"] or 0) / tool_executions * 100, 1) if tool_executions else 100.0,
+                "avgLatencyMs": round(float(tool_row["avg_latency"] or 0)),
+                "byTool": [{"tool": r["tool"], "count": int(r["c"]), "ok": int(r["ok"])} for r in tools_by_name],
+            },
+            "revenue": {
+                "today": round(float(revenue["today"] or 0), 2),
+                "week": round(float(revenue["week"] or 0), 2),
+                "month": round(float(revenue["month"] or 0), 2),
+            },
+            "peakHours": [{"hour": int(r["hour"]), "count": int(r["c"])} for r in peak_rows],
+        }
 
 
 def _iso(value: Any) -> str | None:

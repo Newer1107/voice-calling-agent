@@ -77,6 +77,10 @@ def build_dashboard_router(settings: Settings, hub: DashboardHub, db: DashboardD
     async def dashboard_system() -> dict[str, Any]:
         return await check_system()
 
+    @router.get("/dashboard/stats")
+    async def dashboard_stats() -> dict[str, Any]:
+        return await db.stats()
+
     # -- WebSocket -----------------------------------------------------------
     @router.websocket("/ws/dashboard")
     async def ws_dashboard(websocket: WebSocket) -> None:
