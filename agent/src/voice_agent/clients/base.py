@@ -73,11 +73,13 @@ class VADEndpointDetector:
         # gate: 0.5 -> ~0.012, higher threshold = less sensitive (higher gate).
         rms_gate = 0.002 + 0.02 * self.config.threshold
         if _rms(frame) >= rms_gate:
-            if not self.speech_active:
-                self.speech_active = True
-                events.append("started")
             self._speech_ms += duration_ms
             self._silence_ms = 0
+            # A segment only "starts" after min_speech_ms of continuous speech,
+            # so a tap, breath or short noise burst never opens a segment.
+            if not self.speech_active and self._speech_ms >= self.config.min_speech_ms:
+                self.speech_active = True
+                events.append("started")
         else:
             if self.speech_active:
                 self._silence_ms += duration_ms

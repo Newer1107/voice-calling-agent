@@ -71,6 +71,15 @@ _INITIAL_PROMPT = (
 )
 
 
+def _meaningful(text: str) -> bool:
+    """True when the transcript is real speech, not silence/noise junk.
+
+    Whisper happily transcribes near-silence or a stray tap as "." or a
+    punctuation mark; such output must never be surfaced as user speech.
+    """
+    return sum(1 for ch in text if ch.isalnum()) >= 2
+
+
 class WhisperClient:
     """Whisper STT backend with energy-gate endpointing."""
 
@@ -196,7 +205,10 @@ class WhisperClient:
             segments_iter, info = self._model.transcribe(
                 samples,
                 language=self.language_override or self.settings.stt_language,
-                vad_filter=self.endpoint_on_silence,  # silero pass for real endpoints
+                # Silero pass always: it skips silence (faster, and PTT release
+                # never transcribes a noise tail) and yields nothing when the
+                # input is noise-only, which is the main source of "." garbage.
+                vad_filter=True,
                 vad_parameters={"min_silence_duration_ms": self.settings.vad_min_silence_ms},
                 initial_prompt=_INITIAL_PROMPT,
             )
@@ -205,8 +217,11 @@ class WhisperClient:
                 text_parts.append(segment.text)
                 if len(text_parts) >= 200:
                     break
-            text = "".join(text_parts).strip()
-            if not text:
+            # Space-join: silero can split one utterance into several segments,
+            # and each arrives trimmed — joining without a separator would fuse
+            # words ("book amassage").
+            text = " ".join(part.strip() for part in text_parts).strip()
+            if not _meaningful(text):
                 return []
             return [SpeechEvent(kind="final", text=text, language=info.language, confidence=getattr(info, "language_probability", None))]
         except Exception as exc:

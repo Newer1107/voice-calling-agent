@@ -147,6 +147,7 @@ class VoiceSession:
         # audio must happen before (and independently of) cancelling the LLM.
         self._turn_task: asyncio.Task | None = None
         self._tts_task: asyncio.Task | None = None
+        self._speaking = False
         self._closed = False
         self._ptt_active = False
         self._vad_enabled = settings.vad_enabled
@@ -255,7 +256,12 @@ class VoiceSession:
         if self._closed:
             return
         if speech.kind == "started":
-            await self._interrupt()
+            # Barge in only while the agent is audibly talking. Speech that
+            # starts while it is thinking queues after the current turn instead
+            # of cancelling it — otherwise a pause mid-utterance ("book me…
+            # …a massage") fragments one request into two turns.
+            if self._speaking:
+                await self._interrupt()
             return
         if speech.kind == "partial":
             await self._events.transcript_partial(self.session_id, speech.text)
@@ -512,6 +518,7 @@ class VoiceSession:
 
     # -- TTS / audio output --------------------------------------------------
     async def _speak(self, text: str) -> None:
+        self._speaking = True
         await self._events.state_speaking(self.session_id, active=True)
         try:
             audio = await self._tts.synthesize(text)
@@ -524,6 +531,7 @@ class VoiceSession:
             logger.warning("tts failed", extra={"event": "tts_failed", "session_id": self.session_id, "error": str(exc)})
             await self._events.error(self.session_id, "tts_failed", f"speech synthesis failed: {exc}", recoverable=True)
         finally:
+            self._speaking = False
             if not self._closed:
                 await self._events.state_speaking(self.session_id, active=False)
 
@@ -571,6 +579,9 @@ class VoiceSession:
             was_active = self._ptt_active
             self._ptt_active = False
             if was_active:
+                # Release the listening state immediately — flush transcribes
+                # the hold and can take a second or two.
+                await self._events.state_listening(self.session_id, active=False)
                 for speech in await self._stt.flush():
                     await self._on_speech(speech)
                 await self._events.state_listening(self.session_id, active=self._vad_enabled, source="vad" if self._vad_enabled else "ptt")
