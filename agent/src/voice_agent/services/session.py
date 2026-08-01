@@ -215,8 +215,51 @@ class VoiceSession:
                 "failed" if self._any_tool_failed else "ok",
                 self._last_reply,
             ))
+        await self._send_confirmation_email()
         await self._conversations.close(self.session_id)
         logger.info("session closed", extra={"event": "session.closed", "session_id": self.session_id})
+
+    async def _send_confirmation_email(self) -> None:
+        """Auto-send a booking/order confirmation after the call, if any were made.
+
+        Reads the member email + records created during this conversation from
+        the dashboard DB and fires the existing sendEmail tool. Best effort: any
+        failure is logged, never raised (the session is already closing).
+        """
+        if self._db is None or self._tools is None:
+            return
+        try:
+            info = await self._db.confirmation_for(self.session_id)
+        except Exception as exc:
+            logger.warning("confirmation lookup failed", extra={"event": "email.confirm_failed", "session_id": self.session_id, "error": str(exc)})
+            return
+        if info is None:
+            return
+        lines: list[str] = [f"Hi {info['member']}, thanks for calling IronPeak Fitness!"]
+        for appointment in info["appointments"]:
+            lines.append(
+                f"- {appointment['session']} on {appointment['date']} at {appointment['time']} "
+                f"(booking {appointment['bookingId']}, {appointment['status']})"
+            )
+        for order in info["orders"]:
+            items = ", ".join(
+                f"{item.get('quantity', 1)}x {item.get('name', 'item')}"
+                for item in (order.get("items") or [])
+            )
+            lines.append(f"- Order {order['orderId']} ({order['status']}): {items}")
+        body = "\n".join(lines)
+        try:
+            result = await self._tools.execute(
+                "sendEmail",
+                {"to": info["email"], "subject": "Your IronPeak Fitness confirmation", "body": body},
+                self.session_id,
+            )
+            logger.info(
+                "confirmation email sent",
+                extra={"event": "email.sent", "session_id": self.session_id, "to": info["email"], "ok": result.ok},
+            )
+        except Exception as exc:
+            logger.warning("confirmation email failed", extra={"event": "email.confirm_failed", "session_id": self.session_id, "error": str(exc)})
 
     def _spawn(self, coroutine: Any) -> None:
         task = asyncio.create_task(coroutine)

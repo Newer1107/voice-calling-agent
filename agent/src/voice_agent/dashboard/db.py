@@ -531,6 +531,97 @@ class DashboardDB:
             "peakHours": [{"hour": int(r["hour"]), "count": int(r["c"])} for r in peak_rows],
         }
 
+    # -- staff requests (human-in-the-loop queue) ----------------------------
+    async def staff_requests(self, status: str | None = None) -> list[dict[str, Any]]:
+        """The staff_requests queue: membership upgrades/renewals awaiting a human."""
+        if status:
+            rows = await self._fetch(
+                "SELECT request_id, member_name, request_type, details, status, created_at "
+                "FROM staff_requests WHERE status = $1 ORDER BY created_at DESC",
+                status,
+            )
+        else:
+            rows = await self._fetch(
+                "SELECT request_id, member_name, request_type, details, status, created_at "
+                "FROM staff_requests ORDER BY created_at DESC"
+            )
+        return [
+            {
+                "requestId": r["request_id"],
+                "member": r["member_name"],
+                "requestType": r["request_type"],
+                "details": r["details"],
+                "status": r["status"],
+                "createdAt": _iso(r["created_at"]),
+            }
+            for r in rows
+        ]
 
-def _iso(value: Any) -> str | None:
-    return value.isoformat() if value is not None else None
+    async def staff_request_update(self, request_id: str, status: str) -> dict[str, Any] | None:
+        """Mark a staff request done (e.g. 'completed') and return the updated row."""
+        row = await self._fetchrow(
+            "UPDATE staff_requests SET status = $2 WHERE request_id = $1 "
+            "RETURNING request_id, member_name, request_type, details, status, created_at",
+            request_id, status,
+        )
+        if row is None:
+            return None
+        return {
+            "requestId": row["request_id"],
+            "member": row["member_name"],
+            "requestType": row["request_type"],
+            "details": row["details"],
+            "status": row["status"],
+            "createdAt": _iso(row["created_at"]),
+        }
+
+    # -- after-call confirmation email ---------------------------------------
+    async def confirmation_for(self, conversation_id: str) -> dict[str, Any] | None:
+        """Member email + appointments/orders created during one conversation.
+
+        Used by the session's close() to auto-send a booking/order confirmation
+        after the call. Returns None when the call produced no business records
+        or the member has no email on file.
+        """
+        row = await self._fetchrow(
+            "SELECT c.customer_name, m.email FROM conversations c "
+            "LEFT JOIN members m ON lower(m.name) = lower(c.customer_name) "
+            "WHERE c.id = $1",
+            conversation_id,
+        )
+        if row is None or not row["customer_name"] or not row["email"]:
+            return None
+        appointments = await self._fetch(
+            "SELECT booking_id, session, date, time, status FROM appointments "
+            "WHERE conversation_id = $1 ORDER BY created_at",
+            conversation_id,
+        )
+        orders = await self._fetch(
+            "SELECT order_id, items, status, total FROM orders WHERE conversation_id = $1 ORDER BY created_at",
+            conversation_id,
+        )
+        if not appointments and not orders:
+            return None
+        return {
+            "email": row["email"],
+            "member": row["customer_name"],
+            "appointments": [
+                {
+                    "bookingId": a["booking_id"],
+                    "session": a["session"],
+                    "date": a["date"],
+                    "time": a["time"],
+                    "status": a["status"],
+                }
+                for a in appointments
+            ],
+            "orders": [
+                {
+                    "orderId": o["order_id"],
+                    "items": o["items"],
+                    "status": o["status"],
+                    "total": o["total"],
+                }
+                for o in orders
+            ],
+        }

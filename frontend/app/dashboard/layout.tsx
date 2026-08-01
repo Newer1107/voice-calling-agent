@@ -35,6 +35,7 @@ const NAV_ICONS = {
   analytics: "M4 20V10m6 10V4m6 16v-7m4 7H2",
   stats: "M3 12h4l2-6 4 12 2-6h6",
   system: "M5 8a7 7 0 0 1 14 0M4 8h16v3a8 8 0 0 1-16 0V8Zm9 3h-2v7a2 2 0 0 0 4 0v-7Z",
+  requests: "M12 8v4l3 2m6-2a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z",
 } as const;
 
 const NAV: { href: string; label: string; icon: keyof typeof NAV_ICONS }[] = [
@@ -44,6 +45,7 @@ const NAV: { href: string; label: string; icon: keyof typeof NAV_ICONS }[] = [
   { href: "/dashboard/appointments", label: "Appointments", icon: "appointments" },
   { href: "/dashboard/orders", label: "Orders", icon: "orders" },
   { href: "/dashboard/customers", label: "Customers", icon: "customers" },
+  { href: "/dashboard/requests", label: "Staff Requests", icon: "requests" },
   { href: "/dashboard/analytics", label: "Analytics", icon: "analytics" },
   { href: "/dashboard/stats", label: "Statistics", icon: "stats" },
   { href: "/dashboard/system", label: "System", icon: "system" },

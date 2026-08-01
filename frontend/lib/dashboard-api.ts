@@ -275,6 +275,15 @@ async function getJson<T>(path: string): Promise<T | null> {
   }
 }
 
+export interface StaffRequest {
+  requestId: string;
+  member: string;
+  requestType: string;
+  details: string;
+  status: string;
+  createdAt: string;
+}
+
 export const dashboardApi = {
   overview: () => getJson<OverviewData>("/dashboard/overview"),
   conversations: () => getJson<HistoryEntry[]>("/dashboard/conversations"),
@@ -286,6 +295,26 @@ export const dashboardApi = {
   analytics: () => getJson<AnalyticsData>("/dashboard/analytics"),
   system: () => getJson<SystemStatusData>("/dashboard/system"),
   stats: () => getJson<StatsData>("/dashboard/stats"),
+  requests: () => getJson<StaffRequest[]>("/dashboard/requests"),
+  completeRequest: async (requestId: string): Promise<StaffRequest | null> => {
+    let res: Response;
+    try {
+      res = await fetch(`${apiBase()}/dashboard/requests/${encodeURIComponent(requestId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "completed" }),
+        signal: AbortSignal.timeout(10_000),
+      });
+    } catch {
+      return null;
+    }
+    if (!res.ok) return null;
+    try {
+      return (await res.json()) as StaffRequest;
+    } catch {
+      return null;
+    }
+  },
 };
 
 export type DashboardResource = keyof typeof dashboardApi;

@@ -288,6 +288,29 @@ class GymDB:
         return result
 
     # -- tool operations (each returns the webhook-shaped data payload) ------
+    async def _last_conversation(self, member_name: str) -> dict[str, Any] | None:
+        """The member's most recent finished conversation (cross-call memory).
+
+        Lets the agent greet a returning member with context from their last
+        call ("welcome back - last time we booked your massage"). The
+        conversations table is created by DashboardDB, so guard for the case
+        where it does not exist yet.
+        """
+        try:
+            row = await self._fetchrow(
+                "SELECT summary, finished_at FROM conversations "
+                "WHERE customer_name ILIKE $1 AND status = 'finished' AND summary IS NOT NULL "
+                "ORDER BY finished_at DESC LIMIT 1",
+                f"%{member_name.strip()}%",
+            )
+        except Exception:
+            return None
+        if row is None or not row["summary"]:
+            return None
+        finished = row["finished_at"]
+        days_ago = (date.today() - finished.date()).days if finished is not None else None
+        return {"summary": row["summary"], "daysAgo": days_ago}
+
     async def lookup_customer(self, args: dict[str, Any]) -> dict[str, Any]:
         member = await self._member(str(args.get("name") or args.get("email") or ""))
         if member is None:
@@ -304,6 +327,7 @@ class GymDB:
             "visitsThisMonth": int(member["visits_this_month"]),
             "ltv": float(member["ltv"]),
             "upcomingBookings": await self._upcoming_bookings(member["name"]),
+            "lastVisit": await self._last_conversation(member["name"]),
         }
 
     async def get_membership(self, args: dict[str, Any]) -> dict[str, Any]:

@@ -84,6 +84,18 @@ def build_dashboard_router(settings: Settings, hub: DashboardHub, db: DashboardD
     async def dashboard_stats() -> dict[str, Any]:
         return await db.stats()
 
+    @router.get("/dashboard/requests")
+    async def dashboard_requests(status: str | None = None) -> list[dict[str, Any]]:
+        return await db.staff_requests(status)
+
+    @router.patch("/dashboard/requests/{request_id}")
+    async def dashboard_request_update(request_id: str, status: str = "completed") -> dict[str, Any]:
+        updated = await db.staff_request_update(request_id, status)
+        if updated is None:
+            return JSONResponse(status_code=404, content={"detail": "request not found"})
+        hub.publish("staff.request.updated", updated)
+        return updated
+
     # -- WebSocket -----------------------------------------------------------
     @router.websocket("/ws/dashboard")
     async def ws_dashboard(websocket: WebSocket) -> None:
