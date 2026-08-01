@@ -1,20 +1,24 @@
 # AI Voice Agent
 
-A realtime voice assistant that runs in the browser: you talk, a Python agent
-transcribes locally, reasons with Ollama, delegates business operations to n8n
-webhooks, and speaks back — all streamed over **LiveKit Cloud**.
+A realtime voice assistant that runs in the browser: you talk, the agent
+transcribes with **Deepgram Nova-3** (cloud, streaming, Indian English),
+reasons with **Ollama (llama3.1:8b)**, runs business operations against a
+**live PostgreSQL gym database** (members, memberships, bookings, orders,
+staff requests), and speaks back — all streamed over **LiveKit Cloud**.
 
 ```
 Browser → LiveKit Cloud → Python Agent (Home Server)
-        → Faster-Whisper → Ollama (AI Server) → [n8n webhooks] → Ollama
+        → Deepgram Nova-3 (cloud STT) → Ollama llama3.1:8b (AI Server)
+        → PostgreSQL gym DB (Home Server) → Ollama
         → Edge TTS (en-IN, Kokoro fallback) → LiveKit Cloud → Browser
 ```
 
 There is a second, separate browser experience: the **Realtime Business
 Dashboard** (`/dashboard`), a live control panel for the business owner. While
 customers talk to the agent, the owner watches conversations, appointments,
-orders, customers and system health update in real time over WebSocket —
-no refresh. See [Realtime business dashboard](#realtime-business-dashboard).
+orders, customers, staff requests and system health update in real time over
+WebSocket — no refresh. See
+[Realtime business dashboard](#realtime-business-dashboard).
 
 ## Components
 
@@ -38,14 +42,14 @@ The orchestration server. Runs the entire conversation pipeline:
 
 | Folder | Purpose |
 |---|---|
-| `agent/` | Python LiveKit agent: session orchestration, FastAPI helper (token + history + dashboard API), clients (Whisper, Ollama, Kokoro, n8n), tool manager, dashboard module (event hub + PostgreSQL persistence) |
+| `agent/` | Python LiveKit agent: session orchestration, FastAPI helper (token + history + dashboard API), clients (Deepgram, Ollama, Kokoro), tool manager (DB-backed gym tools), dashboard module (event hub + PostgreSQL persistence + gym database) |
 | `shared/` | Cross-module contracts the agent consumes |
 
-Also hosts (already installed, not recreated): **n8n**, **PostgreSQL**,
-**Redis**. Faster-Whisper and Kokoro run **in-process / locally on this
-machine**. The agent owns: conversation state, session state, tool calling,
-the LiveKit connection, and communication with Whisper, Ollama, Kokoro, and
-n8n.
+Also hosts (already installed, not recreated): **PostgreSQL** (voice_dashboard
+database), **Redis**, and the **TTS wrapper** (Edge TTS primary, Kokoro-82M
+fallback — local HTTP API). The agent owns: conversation state, session state,
+tool calling, the LiveKit connection, and communication with Deepgram,
+Ollama, Kokoro, and PostgreSQL.
 
 ### 3. AI Server
 
@@ -53,7 +57,9 @@ Dedicated to **Ollama only**. Nothing else belongs here; there is no code or
 folder for this machine in the repo. It exposes an OpenAI-compatible HTTP API
 reachable from the Home Server's **local LAN IP** (e.g.
 `http://192.168.x.x:11434`) — never assume localhost. The URL comes from the
-`OLLAMA_BASE_URL` environment variable.
+`OLLAMA_BASE_URL` environment variable. The agent runs **llama3.1:8b**
+(`OLLAMA_MODEL`), chosen for reliable tool calling and honest handling of
+tool results.
 
 ## Architecture
 
@@ -75,34 +81,23 @@ flowchart TB
         EV["EventPublisher<br/>data-channel envelopes"]
         HUB["DashboardHub<br/>event hub (pub/sub)"]
         DPG["DashboardDB<br/>(asyncpg persistence)"]
-        TM["ToolManager<br/>9 webhook tools"]
-        STT["Faster-Whisper<br/>local STT"]
+        TM["ToolManager<br/>11 DB-backed gym tools"]
+        STT["Deepgram STT<br/>Nova-3 streaming (cloud)"]
         OCL["OllamaClient"]
         TCL["TTSClient"]
         MEM["ConversationManager<br/>session memory"]
     end
 
     subgraph DASH["Browser — Business Dashboard (Next.js)"]
-        DB["/dashboard · 8 pages<br/>Overview · Live · History ·<br/>Appointments · Orders ·<br/>Customers · Analytics · System"]
+        DB["/dashboard · 9 pages<br/>Overview · Live · History ·<br/>Appointments · Orders ·<br/>Customers · Analytics ·<br/>System · Statistics"]
     end
 
     subgraph PG["Home Server — PostgreSQL"]
-        PGD[(voice_dashboard<br/>conversations · customers ·<br/>appointments · orders · tools)]
+        PGD[(voice_dashboard<br/>conversations · customers ·<br/>appointments · orders · tools ·<br/>members · memberships ·<br/>membership_plans · staff_requests)]
     end
 
     subgraph AI["AI Server — Ollama"]
         LLM["llama3.1:8b"]
-    end
-
-    subgraph N8N["Home Server — n8n (mock business logic)"]
-        W1["/book-appointment"]
-        W2["/book-spa-appointment"]
-        W3["/get-membership"]
-        W4["/upgrade-membership"]
-        W5["/create-order"]
-        W6["/lookup-customer"]
-        W7["/check-inventory"]
-        W8["/send-email"]
     end
 
     subgraph TTS["Home Server — TTS wrapper (POST /tts)"]
@@ -118,15 +113,15 @@ flowchart TB
     ROOM -->|"client.ptt.start/stop · client.config"| EV
     EV -->|"agent.* · state.* · transcript.* · tool.*"| UI
 
-    SESS -->|"push(frame)"| STT
-    STT -->|"speech events"| SESS
+    SESS -->|"push_frame (streaming)"| STT
+    STT -->|"partial/final speech events"| SESS
     SESS -->|"history + tools"| OCL
     OCL -->|"chat completions"| LLM
-    LLM -->|"reply or JSON tool call"| OCL
+    LLM -->|"reply or tool call"| OCL
     OCL -->|"tool calls"| SESS
     SESS -->|"execute"| TM
-    TM -->|"POST {tool, sessionId, params}"| N8N
-    N8N -->|"{ok, data|error}"| TM
+    TM -->|"SQL: members · memberships ·<br/>bookings · products · orders ·<br/>membership_plans · staff_requests"| PGD
+    PGD -->|"rows"| TM
     SESS <--> MEM
 
     SESS -->|"sanitized sentences"| TCL
@@ -145,10 +140,15 @@ flowchart TB
     DPG <--> PGD
 ```
 
-The browser never communicates directly with Ollama, Whisper, the TTS engine,
-PostgreSQL, Redis, or n8n. The Python Agent is the only orchestration layer.
-LiveKit secrets exist only on the agent (Home Server); the browser receives a
+The browser never communicates directly with Deepgram, Ollama, the TTS engine,
+or PostgreSQL. The Python Agent is the only orchestration layer. LiveKit
+secrets exist only on the agent (Home Server); the browser receives a
 short-lived JWT from the agent's `POST /token`.
+
+**STT provider note:** Deepgram Nova-3 is the default (cloud streaming, ~0.6s
+utterance latency, `en-IN` Indian English). Faster-Whisper (local, medium/int8)
+remains in the codebase as a fallback — switch with `STT_PROVIDER=whisper` in
+`agent/.env`.
 
 ## How a conversation works
 
@@ -158,27 +158,27 @@ sequenceDiagram
     participant B as Browser
     participant R as LiveKit Room
     participant S as VoiceSession
-    participant W as Faster-Whisper
+    participant D as Deepgram Nova-3
     participant O as Ollama (llama3.1:8b)
     participant T as ToolManager
-    participant N as n8n webhook
+    participant P as PostgreSQL (gym DB)
     participant V as TTS wrapper
 
     B->>S: join (token from POST /token)
     S->>B: agent.welcome — "Hello, welcome to IronPeak Fitness…"
-    Note over B,W: User holds Space (PTT) or VAD hears speech
+    Note over B,S: User holds Space (PTT) or VAD hears speech
     B->>R: microphone audio
     R->>S: 16 kHz audio frames
     loop while speaking
-        S->>W: push(frame)
+        S->>D: push_frame (streaming)
     end
-    W-->>S: transcript.final — "My name is Ravi…"
+    D-->>S: transcript.final — "My name is Ravi…"
     S->>B: transcript.final event
     S->>O: complete(history, tools)
-    O-->>S: tool call — getMembership(name: Ravi)
-    S->>T: execute(getMembership, params)
-    T->>N: POST /get-membership {tool, sessionId, params}
-    N-->>T: {ok: true, data: {tier, expiresOn, daysRemaining}}
+    O-->>S: tool call — lookupCustomer(name: Ravi)
+    S->>T: execute(lookupCustomer, params)
+    T->>P: SELECT members JOIN memberships WHERE name = 'Ravi'
+    P-->>T: tier, expiresOn, daysRemaining, upcoming bookings
     T-->>S: ToolResult summary
     S->>B: tool.call + tool.result events
     S->>O: complete(history + tool result)
@@ -203,21 +203,25 @@ sequenceDiagram
 3. **Listen** — the user holds **Space** (push-to-talk) or has **Voice
    activity** enabled. Audio is gated at the session level: in PTT mode nothing
    reaches the STT until the button/key is held; on release, buffered audio is
-   flushed and processed. Mic frames stream into Faster-Whisper (in-process,
-   16 kHz mono), producing `transcript.partial` events live and a
-   `transcript.final` when the utterance ends.
+   flushed and processed. Mic frames stream into **Deepgram Nova-3** (cloud,
+   16 kHz mono, streaming), producing `transcript.partial` events live while
+   speaking and a `transcript.final` when Deepgram's endpointing (700 ms of
+   silence) decides the utterance ended.
 
 4. **Think** — `VoiceSession` runs a turn: it appends the user text to
    conversation memory and calls Ollama (`llama3.1:8b`) with the full
    history plus the registered tool schemas. The model either answers directly
    or returns a tool call (written as JSON text, which the client parses).
 
-5. **Act** — if a tool call comes back, the `ToolManager` executes it: an
-   `{ok, data|error}` envelope is POSTed to the matching n8n webhook
-   (booking, membership, upgrade, order, inventory, email — all mock). The
-   result is appended to the history and the model is called again, up to
-   `MAX_TOOL_ROUNDS` times, until it answers plainly. The frontend renders
-   `tool.call` / `tool.result` as live execution cards with latency.
+5. **Act** — if a tool call comes back, the `ToolManager` executes it against
+   the **live PostgreSQL gym database** — members, memberships, bookings,
+   products, orders, membership plans and staff requests (no external webhook
+   service). A tool failure returns `ok: false` (e.g. "No customer found")
+   which the prompt requires the agent to report honestly — never as a
+   fabricated success. The result is appended to the history and the model is
+   called again, up to `MAX_TOOL_ROUNDS` times, until it answers plainly. The
+   frontend renders `tool.call` / `tool.result` as live execution cards with
+   latency.
 
 6. **Reply** — the final answer is stripped of markdown, symbols and emoji,
    then streamed sentence-by-sentence to the TTS wrapper. Primary voice is
@@ -247,9 +251,10 @@ platform (dark graphite, blue accent, animated charts).
 | `/dashboard/history` | Conversation table (time, customer, duration, summary, outcome, tools); click a row for the full detail — transcript timeline, tool calls with args/results/latency |
 | `/dashboard/appointments` | Upcoming appointments with search + filter |
 | `/dashboard/orders` | Order ID, customer, items, status, total |
-| `/dashboard/customers` | Name, membership tier, visits, last visit, lifetime value (mock), upcoming booking; click for profile |
+| `/dashboard/customers` | Name, membership tier, visits, last visit, lifetime value, upcoming booking; click for profile |
 | `/dashboard/analytics` | Charts: calls/appointments/orders per day, tool usage, conversation duration, customer satisfaction, peak hours |
-| `/dashboard/system` | Health of LiveKit, Ollama, Whisper, TTS (Kokoro), n8n — green/yellow/red, auto-refreshing |
+| `/dashboard/system` | Health of LiveKit, Ollama, Deepgram/Whisper (active STT provider), TTS (Kokoro), PostgreSQL — green/yellow/red, auto-refreshing |
+| `/dashboard/stats` (Statistics) | Membership, bookings, orders, inventory and AI tool performance at a glance (seeded gym data) |
 
 ### Realtime events
 
@@ -266,7 +271,7 @@ reconnects automatically with backoff and re-syncs REST data.
 
 ### API
 
-- `GET /dashboard/overview | conversations | conversations/{id} | appointments | orders | customers | analytics | system`
+- `GET /dashboard/overview | conversations | conversations/{id} | appointments | orders | customers | analytics | system | stats`
 - `WS /ws/dashboard` (also proxied as `wss://…/agent/ws/dashboard`)
 
 Data is persisted to PostgreSQL (`voice_dashboard` database — see
@@ -276,9 +281,10 @@ the session pipeline emits domain events and the store records them.
 
 ## Demo guide: what you can ask the voice agent
 
-The agent is **Maya**, the IronPeak Fitness receptionist. Everything below works
-live — the tools are real webhook calls (the business data is mock, but the
-behaviour is production-shaped).
+The agent is **Maya**, the IronPeak Fitness receptionist. Everything below
+works live — tools execute against the real seeded PostgreSQL gym database
+(members, memberships, bookings, products, orders, plans and staff requests),
+so the behaviour is production-shaped.
 
 ### Capabilities at a glance
 
@@ -289,11 +295,21 @@ behaviour is production-shaped).
 | **Spa booking** | Book massages, saunas, facials | "Book a Swedish massage for tomorrow afternoon" |
 | **Cancellations** | Cancel one or all bookings | "Cancel all my bookings" |
 | **Membership** | Tier, status, expiry date, days left | "When does my membership expire?" |
-| **Upgrades** | Move to Gold or Platinum | "Upgrade me to Platinum" |
+| **Membership plans** | All tiers with prices and perks, quoted from the database | "What are your membership plans?" or "What does Platinum include?" |
+| **Upgrade / renewal** | **Queues a request for the front desk staff** — the agent never claims it's done, it says the request was sent to a person at the gym | "Upgrade me to Platinum" → *"I've sent your upgrade request to the front desk; they'll confirm shortly."* |
+| **Add-ons** | Buy PT packs, guest day passes, locker rental, nutrition coaching | "Add a guest day pass to my account" |
 | **Orders** | Buy merchandise (shakes, bands, tees…) | "Order two protein shakes and a gym tee" |
 | **Availability** | Equipment/facility stock and availability | "Is the sauna available tomorrow morning?" |
 | **Email** | Send confirmations or info by email | "Email me today's class schedule" |
 | **Renewal nudge** | When a membership expires within 30 days, Maya mentions it once and offers to renew | Use the name **Ravi** — his mock membership expires in 3 days |
+
+### Staff-request flow (payments & upgrades)
+
+Upgrades, renewals and anything involving payment are **human-in-the-loop by
+design**: the agent records a `staff_requests` row in PostgreSQL (status
+`pending`, member, type and details) and tells the member their request has
+been sent to the front desk staff — it never claims the payment or upgrade
+succeeded. This keeps the receptionist honest: no fabricated "it's done".
 
 ### The 2-minute demo script
 
@@ -303,16 +319,19 @@ Run this top to bottom in front of a client:
    warns him his membership expires in **3 days**, offering to renew. (Shows
    memory + proactive retention.)
 2. **The booking** — *"Book me a Swedish massage for tomorrow afternoon."* →
-   confirmed with therapist and time, by name. (Shows real webhook execution.)
-3. **The membership** — *"How much to upgrade to Platinum?"* → answers from the
-   profile and offers the upgrade. (Shows the upsell path.)
+   confirmed with therapist and time, by name. (Shows live DB write.)
+3. **The membership upsell** — *"What does Platinum include?"* → answers from
+   `getMembershipPlans` with price and perks (99 GBP). Then *"Upgrade me to
+   Platinum."* → **queues a staff request** and says the front desk will
+   confirm. (Shows honest upsell + human-in-the-loop payment.)
 4. **The multi-task turn** — *"Book a yoga class on Friday, order two resistance
    bands, and check if you have a 16kg kettlebell."* → three tools executed in
    one conversation. (Shows orchestration.)
 5. **The cancellation** — *"Cancel all my bookings."* → cleanly cancels, no
    questions about which ones. (Shows the full service loop.)
 6. **The graceful failure** — *"Book me a shark-wrestling session."* → Maya
-   politely says she can't and offers the spa instead. (Shows honest AI
+   politely says she can't and offers the spa instead. Also try *"My name is
+   Zorp."* → she honestly says she couldn't find that member. (Shows honest AI
    behaviour — no fabricated success.)
 
 ### What this demonstrates to a client (business value)
@@ -321,17 +340,19 @@ Run this top to bottom in front of a client:
   cancellations and membership questions handled without staff.
 - **Member self-service** — the member never repeats themselves; the agent
   pulls their record the moment they give their name.
-- **Revenue moments** — spa bookings, membership upgrades and merchandise
-  orders are all conversational upsell opportunities.
+- **Revenue moments** — spa bookings, membership plans and add-ons are
+  conversational upsell opportunities, with payments handed cleanly to staff.
 - **Retention** — proactive renewal warnings before memberships lapse.
 - **Operational** — live availability and inventory answers; confirmations
   emailed automatically.
-- **Honest AI** — graceful "I can't do that" handling instead of hallucinated
-  success, and a real-time voice pipeline (STT → LLM → business logic → TTS).
+- **Honest AI** — graceful "I can't do that" and "I couldn't find that member"
+  handling instead of hallucinated success, and a real-time voice pipeline
+  (STT → LLM → business logic → TTS).
 - **Live visibility** — while the customer talks, open `/dashboard` on a second
   screen: the call appears instantly with its transcript, the tool execution
-  cards light up, and the appointment/order/customer records land in real time.
-  This is the "receptionist's control panel" moment for the owner.
+  cards light up, and the appointment/order/customer/staff-request records land
+  in real time. This is the "receptionist's control panel" moment for the
+  owner.
 
 ### Demo tips
 
@@ -353,9 +374,9 @@ Run this top to bottom in front of a client:
 |---|---|---|
 | `frontend/` | any machine with a browser / dev host | Next.js app: voice console (`/`) + business dashboard (`/dashboard`) |
 | `livekit/` | reference only | LiveKit Cloud connection values (README inside) |
-| `agent/` | Home Server | Python agent + FastAPI helper (README inside) |
+| `agent/` | Home Server | Python agent + FastAPI helper + DB-backed gym tools + STT benchmark (README inside) |
 | `shared/` | Home Server (via agent); referenced by frontend | Canonical contracts: `schemas/`, `contracts/`, `types/`, `configuration/env-conventions.md` |
-| `docs/` | any | Architecture, API, webhook integration, project overview |
+| `docs/` | any | Architecture, API, project overview |
 
 ## Startup order
 
@@ -364,28 +385,30 @@ Run this top to bottom in front of a client:
 2. **Start the Python Agent on the Home Server** (`cd agent` → follow
    `agent/README.md`) — it connects to LiveKit Cloud and exposes `POST /token`
    on `AGENT_HOST:AGENT_PORT`.
-3. **Ensure Faster-Whisper and Kokoro are running on the Home Server**
-   (Whisper loads in-process; Kokoro must expose its HTTP wrapper on
-   `TTS_BASE_URL`).
+3. **Pick an STT provider** in `agent/.env`: `STT_PROVIDER=deepgram` (default;
+   set `DEEPGRAM_API_KEY`) for cloud Nova-3 streaming, or `STT_PROVIDER=whisper`
+   for local Faster-Whisper. Ensure the TTS wrapper (Kokoro on `TTS_BASE_URL`)
+   is running.
 4. **Verify connectivity to the Ollama server over the LAN**:
    `curl http://192.168.x.x:11434/v1/models` from the Home Server; set
-   `OLLAMA_BASE_URL` to that LAN address in `agent/.env`.
+   `OLLAMA_BASE_URL` to that LAN address and `OLLAMA_MODEL=llama3.1` in
+   `agent/.env`.
 5. **Start the frontend** (`cd frontend` → follow `frontend/README.md`):
    `npm install`, `npm run build`, `npm run start`. The console is at `/`, the
    business dashboard at `/dashboard`.
 6. **Open the application in the browser**, press Connect, and verify the
    full conversation flow (transcript, tool calls, audio reply).
-7. **Dashboard persistence** (optional but recommended): ensure PostgreSQL is
-   reachable at `DASHBOARD_DATABASE_URL` — the agent creates the schema
-   automatically. Without it the agent still runs; only the dashboard data
-   store is unavailable.
+7. **Dashboard + gym data** (optional but recommended): ensure PostgreSQL is
+   reachable at `DASHBOARD_DATABASE_URL` — the agent creates the schema and
+   seeds the gym database automatically. Without it the agent still runs; only
+   the dashboard data store is unavailable.
 
 ## Configuration
 
 Environment variables are **separated by component** — never mixed:
 
 - `frontend/.env.example` — browser-side URLs
-- `agent/.env.example` — LiveKit Cloud, Ollama (LAN), Whisper, Kokoro, n8n webhooks, dashboard (Postgres), logging
+- `agent/.env.example` — LiveKit Cloud, Ollama (LAN), STT (Deepgram or Whisper), Kokoro, dashboard (Postgres), logging
 - `livekit/.env.example` — LiveKit Cloud connection values shared with the other two
 
 Canonical names and defaults: `shared/configuration/env-conventions.md`.
@@ -394,8 +417,16 @@ Canonical names and defaults: `shared/configuration/env-conventions.md`.
 
 ```bash
 # Home Server — agent
-cd agent && cp .env.example .env             # fill LIVEKIT_* (Cloud), OLLAMA_BASE_URL (LAN), N8N_WEBHOOK_BASE_URL
+cd agent && cp .env.example .env             # fill LIVEKIT_* (Cloud), OLLAMA_BASE_URL (LAN), DEEPGRAM_API_KEY
 pip install -e . && agent-run                # agent API on :8080
+
+# STT provider switch (A/B test or fallback)
+#   STT_PROVIDER=deepgram  -> Deepgram Nova-3 (cloud streaming, en-IN)
+#   STT_PROVIDER=whisper   -> local Faster-Whisper (medium, int8)
+
+# STT benchmark (WER + latency, same harness for both providers)
+cd agent && .venv/bin/python scripts/bench_stt.py <label>
+# results -> agent/benchmark/results/<label>.json (avg WER + avg latency ms)
 
 # Frontend (dev machine or Home Server)
 cd frontend && cp .env.example .env.local    # NEXT_PUBLIC_LIVEKIT_URL (Cloud) + NEXT_PUBLIC_AGENT_API_URL
@@ -409,6 +440,5 @@ curl http://192.168.x.x:11434/v1/models
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — full pipeline, module responsibilities, session lifecycle
 - [docs/API.md](docs/API.md) — FastAPI surface + data-channel event reference
-- [docs/WEBHOOKS.md](docs/WEBHOOKS.md) — n8n integration, example payloads, adding tools
 - [docs/PROJECT_OVERVIEW.md](docs/PROJECT_OVERVIEW.md) — goals, constraints, extension points
-- `shared/` — the source-of-truth contracts (schemas, env conventions, webhook shapes)
+- `shared/` — the source-of-truth contracts (schemas, env conventions)

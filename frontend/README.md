@@ -13,7 +13,7 @@ The frontend talks to exactly two things:
    `POST /token` (get a short-lived LiveKit join token) and
    `GET /history/{sessionId}`.
 
-It never talks to Ollama, Whisper, Kokoro, n8n, PostgreSQL, or Redis — the
+It never talks to Deepgram, Ollama, Kokoro, PostgreSQL, or Redis — the
 Python agent is the only orchestration layer.
 
 ## Prerequisites
