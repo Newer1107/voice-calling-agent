@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 interface ControlsPanelProps {
   connected: boolean;
@@ -53,6 +53,12 @@ export function ControlsPanel({
     };
   }, [connected, onStartPtt, onStopPtt]);
 
+  const [coarsePointer, setCoarsePointer] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    setCoarsePointer(window.matchMedia("(pointer: coarse)").matches);
+  }, []);
+
   const pttActive = pttHeld || listening;
   const stateLabel = !connected
     ? "Disconnected"
@@ -91,14 +97,17 @@ export function ControlsPanel({
         <button
           type="button"
           disabled={!connected || !micEnabled || speaking}
-          onPointerDown={onStartPtt}
+          onPointerDown={(e) => {
+            e.currentTarget.setPointerCapture(e.pointerId);
+            onStartPtt();
+          }}
           onPointerUp={onStopPtt}
-          onPointerLeave={pttHeld ? onStopPtt : undefined}
+          onPointerCancel={onStopPtt}
           onContextMenu={(e) => e.preventDefault()}
           aria-label={
             pttActive ? "Release to stop talking" : "Hold to talk"
           }
-          className="group relative flex h-20 w-20 items-center justify-center rounded-full disabled:cursor-not-allowed disabled:opacity-40"
+          className="group relative flex h-20 w-20 touch-none select-none items-center justify-center rounded-full disabled:cursor-not-allowed disabled:opacity-40"
         >
           {pttActive && (
             <span
@@ -132,9 +141,15 @@ export function ControlsPanel({
           ) : pttActive ? (
             "Release to send"
           ) : vadEnabled ? (
-            <>
-              Voice activity — hold <kbd className="kbd">Space</kbd> to override
-            </>
+            coarsePointer ? (
+              "Voice activity — hold the mic to override"
+            ) : (
+              <>
+                Voice activity — hold <kbd className="kbd">Space</kbd> to override
+              </>
+            )
+          ) : coarsePointer ? (
+            "Hold the mic to talk"
           ) : (
             <>
               Hold <kbd className="kbd">Space</kbd> to talk
