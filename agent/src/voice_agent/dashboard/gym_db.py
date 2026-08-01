@@ -543,19 +543,27 @@ class GymDB:
         query = str(args.get("query") or "").strip()
         if not query:
             raise ValueError("A query is required")
-        rows = await self._fetch(
-            "SELECT topic, keywords, answer FROM gym_kb "
-            "WHERE $1 ILIKE '%' || keywords || '%' "
-            "OR keywords ILIKE '%' || $1 || '%' "
-            "OR $1 ILIKE '%' || topic || '%' "
-            "ORDER BY id LIMIT 3",
-            query,
-        )
-        if not rows:
+        # Score by how many query words appear in a row's keywords; the row
+        # with the most overlap wins. Word-level (not substring) so natural
+        # questions like "what time do you open" match the "hours" row.
+        rows = await self._fetch("SELECT topic, keywords, answer FROM gym_kb ORDER BY id")
+        words = {w for w in query.lower().split() if len(w) >= 3}
+        scored: list[tuple[int, asyncpg.Record]] = []
+        for r in rows:
+            kw = set((r["keywords"] or "").lower().split())
+            overlap = len(words & kw)
+            if overlap:
+                scored.append((overlap, r))
+        if not scored:
             return {"answer": None, "matches": []}
+        scored.sort(key=lambda item: item[0], reverse=True)
+        best = scored[0][1]
         return {
-            "answer": rows[0]["answer"],
-            "matches": [{"topic": r["topic"], "answer": r["answer"]} for r in rows],
+            "answer": best["answer"],
+            "matches": [
+                {"topic": r["topic"], "answer": r["answer"]}
+                for _, r in scored[:3]
+            ],
         }
 
     async def create_order(self, args: dict[str, Any]) -> dict[str, Any]:
