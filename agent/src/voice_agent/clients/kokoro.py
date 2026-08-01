@@ -77,12 +77,12 @@ class KokoroClient:
             timeout=httpx.Timeout(min(settings.tts_timeout_ms / 1000.0, TTS_TIMEOUT_CEIL_S)),
         )
 
-    async def synthesize(self, text: str, *, voice: str | None = None) -> bytes:
+    async def synthesize(self, text: str) -> bytes:
         """Synthesize speech; returns b'' (not raises) on any failure."""
         try:
             response = await self._client.post(
                 "/tts",
-                json={"text": text, "voice": voice or self.settings.tts_voice or DEFAULT_VOICE, "speed": self.settings.tts_speed},
+                json={"text": text, "voice": self.settings.tts_voice or DEFAULT_VOICE, "speed": self.settings.tts_speed},
             )
             if response.status_code != 200:
                 logger.warning("tts http error", extra={"event": "tts.http_error", "status": response.status_code})

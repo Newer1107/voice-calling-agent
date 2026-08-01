@@ -57,7 +57,6 @@ class Settings(BaseSettings):
     # --- Kokoro TTS ----------------------------------------------------------
     tts_base_url: str = Field(default="http://localhost:8880")
     tts_voice: str = Field(default="af_heart")
-    tts_hindi_voice: str = Field(default="hi-IN-SwaraNeural", description="Edge TTS Hindi voice used when the user speaks Hindi")
     tts_speed: float = Field(default=1.0, gt=0.0)
     tts_timeout_ms: int = Field(default=15000, ge=1)
 

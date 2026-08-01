@@ -15,7 +15,6 @@ ROOM = sys.argv[1] if len(sys.argv) > 1 else "e2e-speech"
 UTTERANCE = sys.argv[2] if len(sys.argv) > 2 else (
     "I would like to book a yoga class tomorrow evening at six thirty for Sarah please"
 )
-VOICE = sys.argv[3] if len(sys.argv) > 3 else "af_heart"
 
 
 def get_token(room: str) -> str:
@@ -30,7 +29,7 @@ def get_token(room: str) -> str:
 def synth(text: str) -> bytes:
     req = urllib.request.Request(
         "http://localhost:8880/tts",
-        data=json.dumps({"text": text, "voice": VOICE, "speed": 1.0}).encode(),
+        data=json.dumps({"text": text, "voice": "af_heart", "speed": 1.0}).encode(),
         headers={"Content-Type": "application/json"},
     )
     return urllib.request.urlopen(req, timeout=60).read()
