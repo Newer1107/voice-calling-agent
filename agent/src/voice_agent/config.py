@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     ollama_temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     ollama_timeout_ms: int = Field(default=30000, ge=1)
     ollama_max_retries: int = Field(default=2, ge=0)
-    ollama_max_tokens: int = Field(default=512, ge=1)
+    ollama_max_tokens: int = Field(default=200, ge=1, description="Max tokens per reply; keeps spoken answers short")
     ollama_system_prompt: str | None = Field(default=None, description="Overrides the default prompt in clients/prompts.py")
 
     # --- Faster-Whisper STT --------------------------------------------------
