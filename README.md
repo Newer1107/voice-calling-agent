@@ -16,10 +16,6 @@ customers talk to the agent, the owner watches conversations, appointments,
 orders, customers and system health update in real time over WebSocket —
 no refresh. See [Realtime business dashboard](#realtime-business-dashboard).
 
-The agent is **bilingual**: speak English or Hindi and Maya understands,
-responds in the same language, and speaks with a language-matched Indian
-voice. See [Example conversations](#example-conversations).
-
 ## Components
 
 The system is built for a distributed setup with three components. Clone the
@@ -80,7 +76,7 @@ flowchart TB
         HUB["DashboardHub<br/>event hub (pub/sub)"]
         DPG["DashboardDB<br/>(asyncpg persistence)"]
         TM["ToolManager<br/>9 webhook tools"]
-        STT["Faster-Whisper<br/>local STT · auto-detect EN/HI"]
+        STT["Faster-Whisper<br/>local STT"]
         OCL["OllamaClient"]
         TCL["TTSClient"]
         MEM["ConversationManager<br/>session memory"]
@@ -110,7 +106,7 @@ flowchart TB
     end
 
     subgraph TTS["Home Server — TTS wrapper (POST /tts)"]
-        EDGE["Edge TTS — en-IN-NeerjaNeural / hi-IN-SwaraNeural<br/>(Indian English + Hindi, language-matched)"]
+        EDGE["Edge TTS — en-IN-NeerjaNeural<br/>(primary, Indian English)"]
         KOK["Kokoro-82M<br/>(offline fallback)"]
     end
 
@@ -208,8 +204,7 @@ sequenceDiagram
    activity** enabled. Audio is gated at the session level: in PTT mode nothing
    reaches the STT until the button/key is held; on release, buffered audio is
    flushed and processed. Mic frames stream into Faster-Whisper (in-process,
-   16 kHz mono), which auto-detects English or Hindi (with a Hindi fallback
-   pass for short audio), producing `transcript.partial` events live and a
+   16 kHz mono), producing `transcript.partial` events live and a
    `transcript.final` when the utterance ends.
 
 4. **Think** — `VoiceSession` runs a turn: it appends the user text to
@@ -225,80 +220,15 @@ sequenceDiagram
    `tool.call` / `tool.result` as live execution cards with latency.
 
 6. **Reply** — the final answer is stripped of markdown, symbols and emoji,
-   then streamed sentence-by-sentence to the TTS wrapper. The voice is matched
-   to the detected language: `en-IN-NeerjaNeural` for English,
-   `hi-IN-SwaraNeural` for Hindi (both Microsoft Edge neural voices; the
-   wrapper falls back to local Kokoro-82M so the agent always speaks). Audio
-   frames are published back through LiveKit and played in the browser while
-   `state.*` events drive the UI indicators.
+   then streamed sentence-by-sentence to the TTS wrapper. Primary voice is
+   Microsoft Edge TTS (`en-IN-NeerjaNeural`, Indian English); if the network
+   call fails the wrapper falls back to local Kokoro-82M so the agent always
+   speaks. Audio frames are published back through LiveKit and played in the
+   browser while `state.*` events drive the UI indicators.
 
 7. **Remember** — the session keeps the conversation (including the member's
    name) in `ConversationManager`; history is retrievable via
    `GET /history/{sessionId}`.
-
-## Example conversations
-
-Everything below is how the live agent actually behaves. `→` marks a tool
-call that fires behind the scenes.
-
-### English — booking, membership, upgrade
-
-```
-You:   My name is Sarah.
-       → lookupCustomer(name: Sarah)
-Maya:  Hello Sarah! Welcome back to IronPeak Fitness. Your membership expires
-       in 31 days — would you like to renew it today?
-
-You:   What do I have booked?
-Maya:  You have a Swedish Massage on Aug 1 at 4 PM with Aisha, and a Personal
-       Training session on Aug 2 at 6 PM.
-
-You:   Book me a deep tissue massage for Saturday at 5.
-       → bookSpaAppointment(customerName: Sarah, service: Deep Tissue Massage,
-                            date: 2026-08-08, time: 17:00)
-Maya:  Done, Sarah — your deep tissue massage is booked for Saturday at 5 PM.
-
-You:   Upgrade my membership to Platinum.
-       → upgradeMembership(customerName: Sarah, tier: Platinum)
-Maya:  Congratulations, Sarah! Your membership is now Platinum.
-
-You:   Cancel all my bookings.
-       → cancelBooking(customerName: Sarah)
-Maya:  Sure, Sarah — all your bookings have been cancelled.
-```
-
-### हिंदी — पूरी बातचीत हिंदी में (entire conversation in Hindi)
-
-```
-आप:    मेरा नाम सारा है।
-       → lookupCustomer(name: Sarah)
-माया:  नमस्ते सारा! आयरनपीक फिटनेस में आपका स्वागत है। आपकी मेम्बरशिप 31
-       दिनों में खत्म हो रही है — क्या आप इसे आज ही रिन्यू करना चाहेंगी?
-
-आप:    मेरी मेम्बरशिप कब खत्म हो रही है?
-माया:  आपकी सिल्वर मेम्बरशिप 31 अगस्त को खत्म हो रही है, यानी 31 दिन बाकी हैं।
-
-आप:    कल शाम के लिए स्वीडिश मसाज बुक कर दीजिए।
-       → bookSpaAppointment(customerName: Sarah, service: Swedish Massage)
-माया:  जी, सारा! कल शाम 4 बजे आपकी स्वीडिश मसाज बुक हो गई है।
-
-आप:    मेम्बरशिप अपग्रेड करनी है प्लैटिनम में।
-       → upgradeMembership(customerName: Sarah, tier: Platinum)
-माया:  बधाई हो, सारा! आपकी मेम्बरशिप अब प्लैटिनम हो गई है।
-```
-
-(माया उसी भाषा में जवाब देती है जिसमें आप बोलते हैं — अंग्रेज़ी या हिंदी। Maya
-replies in the same language you speak — English or Hindi — with a matching
-Indian voice.)
-
-### The graceful no
-
-```
-You:   Book me a shark-wrestling session tomorrow.
-Maya:  I'm sorry, we don't offer that here. But I can book you a personal
-       training session or a relaxing spa treatment instead — which would
-       you prefer?
-```
 
 ## Realtime business dashboard
 
@@ -384,10 +314,6 @@ Run this top to bottom in front of a client:
 6. **The graceful failure** — *"Book me a shark-wrestling session."* → Maya
    politely says she can't and offers the spa instead. (Shows honest AI
    behaviour — no fabricated success.)
-7. **The language switch** — switch to Hindi mid-demo: *"मेरा नाम रवि है, मुझे
-   स्पा बुक करवाना है"* → Maya answers in fluent Hindi with the Hindi voice
-   and books the spa. Switch back to English and she follows. (Shows
-   bilingual support.)
 
 ### What this demonstrates to a client (business value)
 
@@ -406,9 +332,6 @@ Run this top to bottom in front of a client:
   screen: the call appears instantly with its transcript, the tool execution
   cards light up, and the appointment/order/customer records land in real time.
   This is the "receptionist's control panel" moment for the owner.
-- **Bilingual** — the agent detects English vs Hindi automatically and replies
-  in the same language. For a Hindi demo, speak naturally in Hindi (real
-  speech transcribes accurately; synthetic/TTS Hindi is the harder case).
 
 ### Demo tips
 
@@ -462,7 +385,7 @@ Run this top to bottom in front of a client:
 Environment variables are **separated by component** — never mixed:
 
 - `frontend/.env.example` — browser-side URLs
-- `agent/.env.example` — LiveKit Cloud, Ollama (LAN), Whisper (STT language auto-detect), Kokoro/Edge TTS (incl. `TTS_HINDI_VOICE`), n8n webhooks, dashboard (Postgres), logging
+- `agent/.env.example` — LiveKit Cloud, Ollama (LAN), Whisper, Kokoro, n8n webhooks, dashboard (Postgres), logging
 - `livekit/.env.example` — LiveKit Cloud connection values shared with the other two
 
 Canonical names and defaults: `shared/configuration/env-conventions.md`.
