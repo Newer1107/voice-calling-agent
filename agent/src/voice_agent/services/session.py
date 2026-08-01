@@ -322,12 +322,27 @@ class VoiceSession:
         if self._closed:
             return
         if self._turn_lock.locked() or self._turn_task is not None:
+            first_queued = not self._pending_finals
             self._pending_finals.append(text)
             logger.debug("queued input during agent turn", extra={"event": "input.queued", "session_id": self.session_id})
+            # If the user spoke while we are thinking (not talking), say
+            # something immediately so silence never reads as "not heard".
+            # Only the first queued final acks, and only when no audio plays.
+            if first_queued and not self._speaking:
+                self._spawn(self._ack_queued())
             return
         self._turn_task = asyncio.create_task(self._handle_turn(text))
 
     # -- agent turn ----------------------------------------------------------
+    async def _ack_queued(self) -> None:
+        """Speak a short acknowledgment so a queued input is never met with silence."""
+        try:
+            await self._speak("One moment please, I'm just finishing something.")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
+
     async def _handle_turn(self, text: str) -> None:
         """Run one turn, then drain anything queued while it held the lock."""
         try:
