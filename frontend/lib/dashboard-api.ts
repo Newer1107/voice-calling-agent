@@ -138,7 +138,7 @@ export interface AnalyticsData {
   peakHours: { hour: number; count: number }[];
 }
 
-export type ServiceName = "livekit" | "ollama" | "whisper" | "tts" | "n8n";
+export type ServiceName = "livekit" | "ollama" | "whisper" | "deepgram" | "tts" | "n8n";
 export type ServiceHealth = "ok" | "degraded" | "down";
 
 export interface SystemStatusData {
@@ -150,6 +150,7 @@ export const SERVICE_LABELS: Record<ServiceName, string> = {
   livekit: "LiveKit",
   ollama: "Ollama",
   whisper: "Whisper",
+  deepgram: "Deepgram",
   tts: "TTS · Kokoro",
   n8n: "n8n",
 };

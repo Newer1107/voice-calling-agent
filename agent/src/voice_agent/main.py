@@ -23,7 +23,7 @@ from livekit.agents import AutoSubscribe, JobContext, WorkerOptions, WorkerType,
 from livekit.agents.job import JobExecutorType
 
 from .api import create_app
-from .clients.base import LLMClient
+from .clients.base import LLMClient, STTClient
 from .clients.kokoro import KokoroClient
 from .clients.ollama import OllamaClient
 from .clients.whisper import WhisperClient
@@ -164,6 +164,22 @@ async def _wait_for_participant(room: rtc.Room, timeout: float = 30.0) -> rtc.Re
         room.off("participant_connected", _on_join)
 
 
+def _build_stt(settings: Settings) -> STTClient:
+    """Return the STT backend selected by STT_PROVIDER.
+
+    The deepgram import is lazy so a whisper-only install (plugin not
+    installed) still boots; the plugin package is only imported when the
+    provider is actually selected.
+    """
+    if settings.stt_provider == "deepgram":
+        if not settings.deepgram_api_key:
+            raise RuntimeError("STT_PROVIDER=deepgram requires DEEPGRAM_API_KEY in agent/.env")
+        from .clients.deepgram import DeepgramClient
+
+        return DeepgramClient(settings)
+    return WhisperClient(settings)
+
+
 async def entrypoint(job: JobContext) -> None:
     """Worker entrypoint: one voice session per joining participant."""
     settings = Settings()
@@ -178,7 +194,7 @@ async def entrypoint(job: JobContext) -> None:
         job.shutdown()
         return
 
-    stt = WhisperClient(shared.settings)
+    stt = _build_stt(shared.settings)
     session = VoiceSession(
         session_id=uuid.uuid4().hex,
         room=job.room,
@@ -216,7 +232,8 @@ async def prewarm_async(_proc: Any) -> None:
     settings = Settings()
     setup_logging(settings.agent_log_level, settings.agent_log_format)
     _start_api_in_thread(settings)
-    _warm_stt_in_thread(settings)
+    if settings.stt_provider != "deepgram":
+        _warm_stt_in_thread(settings)
 
 
 def prewarm(_proc: Any) -> None:
@@ -229,7 +246,8 @@ def prewarm(_proc: Any) -> None:
     settings = Settings()
     setup_logging(settings.agent_log_level, settings.agent_log_format)
     _start_api_in_thread(settings)
-    _warm_stt_in_thread(settings)
+    if settings.stt_provider != "deepgram":
+        _warm_stt_in_thread(settings)
 
 
 def _warm_stt_in_thread(settings: Settings) -> None:
@@ -272,7 +290,11 @@ def main() -> None:
         _start_api_in_thread(settings)
     logger.info(
         "voice agent starting",
-        extra={"event": "worker.start", "model": settings.ollama_model, "stt_model": settings.stt_model_size},
+        extra={
+            "event": "worker.start",
+            "model": settings.ollama_model,
+            "stt_provider": settings.stt_provider,
+        },
     )
     cli.run_app(_build_worker_options(settings))
 

@@ -43,10 +43,30 @@ class Settings(BaseSettings):
     ollama_system_prompt: str | None = Field(default=None, description="Overrides the default prompt in clients/prompts.py")
 
     # --- Faster-Whisper STT --------------------------------------------------
+    stt_provider: Literal["whisper", "deepgram"] = Field(
+        default="whisper",
+        description="STT backend: 'whisper' (local faster-whisper) or 'deepgram' (cloud Nova-3 streaming)",
+    )
     stt_model_size: str = Field(default="base")
     stt_device: str = Field(default="auto", description="auto | cpu | cuda")
     stt_compute_type: str = Field(default="auto", description="auto | int8 | float16 | float32")
     stt_language: str | None = Field(default=None, description="Force a language code; auto-detect when unset")
+
+    # --- Deepgram STT (used when stt_provider=deepgram) ----------------------
+    deepgram_api_key: str | None = Field(
+        default=None,
+        description="Deepgram API key (required when stt_provider=deepgram)",
+    )
+    deepgram_model: str = Field(default="nova-3", description="Deepgram model id, e.g. nova-3")
+    deepgram_language: str = Field(
+        default="en-IN",
+        description="Deepgram language tag; en-IN = Indian English (Nova-3 supports it)",
+    )
+    deepgram_endpointing_ms: int = Field(
+        default=700,
+        ge=0,
+        description="Silence (ms) after which Deepgram finalizes an utterance; 0 disables its endpointing",
+    )
 
     # --- VAD / endpointing ---------------------------------------------------
     vad_enabled: bool = Field(default=True)

@@ -31,7 +31,10 @@ def build_dashboard_router(settings: Settings, hub: DashboardHub, db: DashboardD
     # -- system health -------------------------------------------------------
     async def check_system() -> dict[str, Any]:
         services = hub.snapshot_services()
-        services["whisper"] = "ok" if services.get("whisper") == "ok" else "down"
+        # Report only the STT provider actually in use.
+        stt_key = "deepgram" if settings.stt_provider == "deepgram" else "whisper"
+        services[stt_key] = "ok" if services.get(stt_key) == "ok" else "down"
+        services.pop("whisper" if stt_key == "deepgram" else "deepgram", None)
         services["tts"] = await _probe_http("http://localhost:8880")
         services["ollama"] = await _probe_http(settings.ollama_base_url.rstrip("/") + "/v1/models")
         services["n8n"] = await _probe_http(settings.n8n_webhook_base_url)

@@ -41,7 +41,7 @@ class DashboardHub:
         self._subscribers: dict[int, tuple[asyncio.Queue[dict[str, Any]], asyncio.AbstractEventLoop]] = {}
         self._seq = 0
         self._lock = threading.Lock()
-        self.services: dict[str, str] = {"whisper": "down"}
+        self.services: dict[str, str] = {"whisper": "down", "deepgram": "down"}
 
     # -- pub/sub -------------------------------------------------------------
     def subscribe(self, queue: asyncio.Queue[dict[str, Any]], loop: asyncio.AbstractEventLoop) -> int:

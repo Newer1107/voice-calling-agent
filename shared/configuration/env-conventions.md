@@ -18,10 +18,15 @@ this file is the source of truth for names and defaults.
 | `OLLAMA_MAX_RETRIES` | no | `2` | Retries on transient LLM failures |
 | `OLLAMA_MAX_TOKENS` | no | `512` | Max completion tokens (keeps voice latency sane) |
 | `OLLAMA_SYSTEM_PROMPT` | no | — | Override the default system prompt (see `agent/src/voice_agent/clients/prompts.py`) |
-| `STT_MODEL_SIZE` | no | `base` | Faster-Whisper model size (`tiny`…`large-v3`) |
-| `STT_DEVICE` | no | `auto` | `auto`/`cpu`/`cuda` |
-| `STT_COMPUTE_TYPE` | no | `auto` | `auto`/`int8`/`float16`/`float32` |
+| `STT_PROVIDER` | no | `whisper` | STT backend: `whisper` (local faster-whisper) or `deepgram` (cloud Nova-3 streaming) |
+| `STT_MODEL_SIZE` | no | `base` | Faster-Whisper model size (`tiny`…`large-v3`); unused when `STT_PROVIDER=deepgram` |
+| `STT_DEVICE` | no | `auto` | `auto`/`cpu`/`cuda`; unused when `STT_PROVIDER=deepgram` |
+| `STT_COMPUTE_TYPE` | no | `auto` | `auto`/`int8`/`float16`/`float32`; unused when `STT_PROVIDER=deepgram` |
 | `STT_LANGUAGE` | no | — | Optional language code to force (e.g. `en`); auto-detect when unset |
+| `DEEPGRAM_API_KEY` | when `deepgram` | — | Deepgram API key (required when `STT_PROVIDER=deepgram`) |
+| `DEEPGRAM_MODEL` | no | `nova-3` | Deepgram model id |
+| `DEEPGRAM_LANGUAGE` | no | `en-IN` | Deepgram language tag; `en-IN` = Indian English (supported by Nova-3) |
+| `DEEPGRAM_ENDPOINTING_MS` | no | `700` | Silence (ms) after which Deepgram finalizes an utterance; `0` disables its endpointing |
 | `VAD_ENABLED` | no | `true` | Enable voice-activity detection for endpointing |
 | `VAD_THRESHOLD` | no | `0.5` | Silero VAD speech probability threshold |
 | `VAD_MIN_SPEECH_MS` | no | `250` | Min speech duration before a segment is transcribed |

@@ -11,7 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { SERVICE_LABELS, type ServiceHealth, type ServiceName } from "@/lib/dashboard-api";
 import { useDashboard } from "@/lib/dashboard-store";
 
-const SERVICE_ORDER: ServiceName[] = ["livekit", "ollama", "whisper", "tts", "n8n"];
+const SERVICE_ORDER: ServiceName[] = ["livekit", "ollama", "whisper", "deepgram", "tts", "n8n"];
 
 function HealthBadge({ health }: { health: ServiceHealth }) {
   const tone = health === "ok" ? "success" : health === "degraded" ? "warning" : "error";
