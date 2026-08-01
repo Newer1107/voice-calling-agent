@@ -26,7 +26,13 @@ from .base import SpeechEvent, STTClient, VADConfig, VADEndpointDetector
 logger = get_logger("clients.whisper")
 
 RECOGNIZE_TIMEOUT_S = 20.0
-PARTIAL_INTERVAL_MS = 2000  # partial transcription cadence while speech is ongoing
+# Live-feedback cadence: a partial every PARTIAL_INTERVAL_MS of buffered
+# audio while the user is speaking. 2s felt dead — the user's own words
+# should appear well within their utterance.
+PARTIAL_INTERVAL_MS = 700
+# Partial passes transcribe only the trailing window (seconds), so each
+# pass is short and fast; the final still transcribes the full buffer.
+PARTIAL_WINDOW_S = 5.0
 MAX_BUFFER_S = 30.0         # cap: force a final past this much continuous speech
 
 # Shared model across sessions: loaded once (prewarm or first session) so a
@@ -142,7 +148,7 @@ class WhisperClient:
             if self._model is None:
                 logger.warning("stt unavailable", extra={"event": "stt_unavailable", "error": self._model_error or "unknown"})
             return []
-        result = await asyncio.to_thread(self._recognize, buffer)
+        result = await asyncio.to_thread(self._recognize, buffer, partial)
         if not result:
             return []
         if partial:
@@ -194,12 +200,17 @@ class WhisperClient:
             self._model_error = str(exc)
             logger.error("whisper model load failed", extra={"event": "stt.model_failed", "error": str(exc)})
 
-    def _recognize(self, pcm16: bytes) -> list[SpeechEvent]:
+    def _recognize(self, pcm16: bytes, partial: bool = False) -> list[SpeechEvent]:
         """Run one transcription pass inside the STT thread (blocking)."""
         import numpy as np
 
         try:
             samples = np.frombuffer(pcm16, dtype=np.int16).astype(np.float32) / 32768.0
+            if partial:
+                # Live feedback only needs the recent tail; re-transcribing the
+                # whole buffer on every partial is what made partials lag
+                # seconds behind the user's voice.
+                samples = samples[-int(PARTIAL_WINDOW_S * 16000):]
             if samples.size < self.settings.vad_min_speech_ms * 16:
                 return []
             segments_iter, info = self._model.transcribe(
@@ -210,6 +221,10 @@ class WhisperClient:
                 # input is noise-only, which is the main source of "." garbage.
                 vad_filter=True,
                 vad_parameters={"min_silence_duration_ms": self.settings.vad_min_silence_ms},
+                # Greedy decoding for live partials — faster, and the window
+                # slides anyway, so beam search adds nothing here.
+                beam_size=1 if partial else 5,
+                condition_on_previous_text=False if partial else True,
                 initial_prompt=_INITIAL_PROMPT,
             )
             text_parts: list[str] = []
