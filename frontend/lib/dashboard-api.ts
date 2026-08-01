@@ -10,6 +10,7 @@
  *   GET /dashboard/customers
  *   GET /dashboard/analytics
  *   GET /dashboard/system
+ *   GET /dashboard/stats
  *
  * All fetches are graceful: failures resolve to `null` so pages can render
  * skeletons / empty states instead of crashing (mirrors `getHistory`).
@@ -154,6 +155,88 @@ export const SERVICE_LABELS: Record<ServiceName, string> = {
 };
 
 // ---------------------------------------------------------------------------
+// Statistics (`GET /dashboard/stats`) — the aggregate "Statistics" page
+// ---------------------------------------------------------------------------
+
+export interface TierCount {
+  tier: string;
+  count: number;
+}
+
+export interface ServiceCount {
+  service: string;
+  count: number;
+}
+
+export interface OrderStatusCount {
+  status: string;
+  count: number;
+}
+
+export interface LowStockItem {
+  name: string;
+  stock: number;
+}
+
+export interface ToolStat {
+  tool: string;
+  count: number;
+  ok: number;
+}
+
+export interface PeakHour {
+  hour: number;
+  count: number;
+}
+
+export interface StatsData {
+  members: {
+    total: number;
+    byTier: TierCount[];
+    expiringSoon30: number;
+    expiringSoon7: number;
+    totalVisits: number;
+  };
+  bookings: {
+    upcoming: number;
+    today: number;
+    spa: number;
+    gym: number;
+    byService: ServiceCount[];
+  };
+  orders: {
+    total: number;
+    revenue: number;
+    avgValue: number;
+    byStatus: OrderStatusCount[];
+  };
+  inventory: {
+    products: number;
+    lowStock: LowStockItem[];
+    outOfStock: number;
+  };
+  conversations: {
+    total: number;
+    ok: number;
+    failed: number;
+    avgDurationSec: number;
+    totalMessages: number;
+  };
+  tools: {
+    executions: number;
+    successRate: number; // 0..100
+    avgLatencyMs: number;
+    byTool: ToolStat[];
+  };
+  revenue: {
+    today: number;
+    week: number;
+    month: number;
+  };
+  peakHours: PeakHour[];
+}
+
+// ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
 
@@ -201,6 +284,7 @@ export const dashboardApi = {
   customers: () => getJson<Customer[]>("/dashboard/customers"),
   analytics: () => getJson<AnalyticsData>("/dashboard/analytics"),
   system: () => getJson<SystemStatusData>("/dashboard/system"),
+  stats: () => getJson<StatsData>("/dashboard/stats"),
 };
 
 export type DashboardResource = keyof typeof dashboardApi;
