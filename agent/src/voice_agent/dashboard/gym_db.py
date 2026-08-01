@@ -82,9 +82,103 @@ CREATE TABLE IF NOT EXISTS gym_orders (
 
 TIER_PRICES = {"Silver": "39.00 GBP", "Gold": "59.00 GBP", "Platinum": "99.00 GBP"}
 
+_gym_ready = False
+
 
 def _days_from_today(days: int) -> str:
     return (date.today() + timedelta(days=days)).isoformat()
+
+
+async def ensure_gym(conn: asyncpg.Connection) -> None:
+    """Create the gym schema and seed it once per process.
+
+    Called from both the gym tool backend and the dashboard API, so the
+    seeded dataset is present the moment either touches the database.
+    """
+    global _gym_ready
+    await conn.execute(_SCHEMA)
+    if _gym_ready:
+        return
+    await _seed(conn)
+    _gym_ready = True
+
+
+async def _seed(conn: asyncpg.Connection) -> None:
+    # Deterministic mockup: reset the gym data to the seeded state on every
+    # process start (module `_gym_ready` guard prevents re-seeding).
+    await conn.execute(
+        "TRUNCATE members, memberships, gym_classes, spa_services, bookings, products, gym_orders "
+        "RESTART IDENTITY CASCADE"
+    )
+    members = [
+        ("Sarah", "sarah@gym.example", "555-0101", _days_from_today(-540), "Silver", "active", 31, 15, 620.0),
+        ("Ravi", "ravi@gym.example", "555-0102", _days_from_today(-300), "Silver", "active", 3, 8, 310.0),
+        ("Alice", "alice@gym.example", "555-0103", _days_from_today(-720), "Gold", "active", 25, 22, 1450.0),
+        ("Priya", "priya@gym.example", "555-0104", _days_from_today(-900), "Platinum", "active", 60, 30, 3200.0),
+        ("Vikram", "vikram@gym.example", "555-0105", _days_from_today(-200), "Silver", "active", 40, 5, 180.0),
+        ("Ananya", "ananya@gym.example", "555-0106", _days_from_today(-650), "Gold", "active", 12, 18, 1100.0),
+        ("Rahul", "rahul@gym.example", "555-0107", _days_from_today(-1000), "Platinum", "active", 90, 25, 4100.0),
+        ("Meera", "meera@gym.example", "555-0108", _days_from_today(-380), "Silver", "active", 45, 10, 420.0),
+    ]
+    for name, email, phone, joined, tier, status, days, visits, ltv in members:
+        await conn.execute(
+            "INSERT INTO members (name, email, phone, joined_on) VALUES ($1,$2,$3,$4) "
+            "ON CONFLICT (name) DO NOTHING",
+            name, email, phone, date.fromisoformat(joined),
+        )
+        member_id = await conn.fetchval("SELECT id FROM members WHERE name = $1", name)
+        await conn.execute(
+            "INSERT INTO memberships (member_id, tier, status, expires_on, visits_this_month, ltv) "
+            "VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (member_id) DO NOTHING",
+            member_id, tier, status, date.fromisoformat(_days_from_today(days)), visits, ltv,
+        )
+    for name, category, dur, instructor in [
+        ("Yoga Basics", "Yoga", 60, "Aisha"),
+        ("HIIT Burn", "Cardio", 45, "Arjun"),
+        ("Spin Class", "Cardio", 45, "Kabir"),
+        ("CrossFit", "Strength", 60, "Dev"),
+        ("Personal Training", "Strength", 60, "Arjun"),
+    ]:
+        await conn.execute(
+            "INSERT INTO gym_classes (name, category, duration_min, instructor) VALUES ($1,$2,$3,$4)",
+            name, category, dur, instructor,
+        )
+    for name, dur, price, therapist in [
+        ("Swedish Massage", 60, 79.0, "Aisha"),
+        ("Deep Tissue Massage", 60, 89.0, "Aisha"),
+        ("Sauna Session", 30, 25.0, None),
+        ("Aromatherapy Facial", 45, 69.0, "Nisha"),
+        ("Hot Stone Therapy", 75, 99.0, "Nisha"),
+    ]:
+        await conn.execute(
+            "INSERT INTO spa_services (name, duration_min, price, therapist) VALUES ($1,$2,$3,$4)",
+            name, dur, price, therapist,
+        )
+    for name, price, stock, category in [
+        ("Protein Shake", 5.5, 120, "Nutrition"),
+        ("Resistance Band", 12.99, 80, "Equipment"),
+        ("Gym Tee", 24.99, 50, "Apparel"),
+        ("Kettlebell 16kg", 49.99, 10, "Equipment"),
+        ("Yoga Mat", 19.99, 30, "Equipment"),
+    ]:
+        await conn.execute(
+            "INSERT INTO products (name, price, stock, category) VALUES ($1,$2,$3,$4)",
+            name, price, stock, category,
+        )
+    await conn.execute(
+        "INSERT INTO bookings (booking_id, member_name, kind, service, date, time, status) VALUES "
+        "('SPA-1001', 'Sarah', 'spa', 'Swedish Massage', $1, '16:00', 'confirmed'), "
+        "('GYM-1002', 'Sarah', 'gym', 'Personal Training', $2, '18:00', 'confirmed'), "
+        "('SPA-1003', 'Alice', 'spa', 'Sauna Session', $3, '09:00', 'confirmed'), "
+        "('GYM-1004', 'Ravi', 'gym', 'CrossFit', $4, '07:00', 'confirmed')",
+        _days_from_today(1), _days_from_today(2), _days_from_today(1), _days_from_today(1),
+    )
+    await conn.execute(
+        "INSERT INTO gym_orders (order_id, member_name, items, status, total) VALUES "
+        "('ORD-1001', 'Rahul', '[{\"name\":\"Protein Shake\",\"quantity\":4}]', 'processing', 22.0), "
+        "('ORD-1002', 'Priya', '[{\"name\":\"Gym Tee\",\"quantity\":2}]', 'delivered', 49.98)"
+    )
+    logger.info("gym database seeded", extra={"event": "gym.seeded"})
 
 
 class GymDB:
@@ -92,14 +186,10 @@ class GymDB:
 
     def __init__(self, settings: Settings) -> None:
         self.dsn = settings.dashboard_database_url
-        self._seeded = False
 
     async def _conn(self) -> asyncpg.Connection:
         conn = await asyncpg.connect(self.dsn, timeout=3.0)
-        await conn.execute(_SCHEMA)
-        if not self._seeded:
-            await self._seed(conn)
-            self._seeded = True
+        await ensure_gym(conn)
         return conn
 
     async def _run(self, sql: str, *args: Any) -> None:
@@ -122,79 +212,6 @@ class GymDB:
             return await conn.fetchrow(sql, *args)
         finally:
             await conn.close()
-
-    # -- seed ----------------------------------------------------------------
-    async def _seed(self, conn: asyncpg.Connection) -> None:
-        # Deterministic mockup: reset the gym data to the seeded state on
-        # every process start (per-instance `_seeded` guard prevents re-seeding).
-        await conn.execute(
-            "TRUNCATE members, memberships, gym_classes, spa_services, bookings, products, gym_orders "
-            "RESTART IDENTITY CASCADE"
-        )
-        members = [
-            ("Sarah", "sarah@gym.example", "555-0101", _days_from_today(-540), "Silver", "active", 31, 15, 620.0),
-            ("Ravi", "ravi@gym.example", "555-0102", _days_from_today(-300), "Silver", "active", 3, 8, 310.0),
-            ("Alice", "alice@gym.example", "555-0103", _days_from_today(-720), "Gold", "active", 25, 22, 1450.0),
-            ("Priya", "priya@gym.example", "555-0104", _days_from_today(-900), "Platinum", "active", 60, 30, 3200.0),
-            ("Vikram", "vikram@gym.example", "555-0105", _days_from_today(-200), "Silver", "active", 40, 5, 180.0),
-            ("Ananya", "ananya@gym.example", "555-0106", _days_from_today(-650), "Gold", "active", 12, 18, 1100.0),
-            ("Rahul", "rahul@gym.example", "555-0107", _days_from_today(-1000), "Platinum", "active", 90, 25, 4100.0),
-            ("Meera", "meera@gym.example", "555-0108", _days_from_today(-380), "Silver", "active", 45, 10, 420.0),
-        ]
-        for name, email, phone, joined, tier, status, days, visits, ltv in members:
-            await conn.execute(
-                "INSERT INTO members (name, email, phone, joined_on) VALUES ($1,$2,$3,$4) "
-                "ON CONFLICT (name) DO NOTHING",
-                name, email, phone, date.fromisoformat(joined),
-            )
-            member_id = await conn.fetchval("SELECT id FROM members WHERE name = $1", name)
-            await conn.execute(
-                "INSERT INTO memberships (member_id, tier, status, expires_on, visits_this_month, ltv) "
-                "VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (member_id) DO NOTHING",
-                member_id, tier, status, date.fromisoformat(_days_from_today(days)), visits, ltv,
-            )
-        for name, category, dur, instructor in [
-            ("Yoga Basics", "Yoga", 60, "Aisha"),
-            ("HIIT Burn", "Cardio", 45, "Arjun"),
-            ("Spin Class", "Cardio", 45, "Kabir"),
-            ("CrossFit", "Strength", 60, "Dev"),
-            ("Personal Training", "Strength", 60, "Arjun"),
-        ]:
-            await conn.execute(
-                "INSERT INTO gym_classes (name, category, duration_min, instructor) VALUES ($1,$2,$3,$4)",
-                name, category, dur, instructor,
-            )
-        for name, dur, price, therapist in [
-            ("Swedish Massage", 60, 79.0, "Aisha"),
-            ("Deep Tissue Massage", 60, 89.0, "Aisha"),
-            ("Sauna Session", 30, 25.0, None),
-            ("Aromatherapy Facial", 45, 69.0, "Nisha"),
-            ("Hot Stone Therapy", 75, 99.0, "Nisha"),
-        ]:
-            await conn.execute(
-                "INSERT INTO spa_services (name, duration_min, price, therapist) VALUES ($1,$2,$3,$4)",
-                name, dur, price, therapist,
-            )
-        for name, price, stock, category in [
-            ("Protein Shake", 5.5, 120, "Nutrition"),
-            ("Resistance Band", 12.99, 80, "Equipment"),
-            ("Gym Tee", 24.99, 50, "Apparel"),
-            ("Kettlebell 16kg", 49.99, 10, "Equipment"),
-            ("Yoga Mat", 19.99, 30, "Equipment"),
-        ]:
-            await conn.execute(
-                "INSERT INTO products (name, price, stock, category) VALUES ($1,$2,$3,$4)",
-                name, price, stock, category,
-            )
-        await conn.execute(
-            "INSERT INTO bookings (booking_id, member_name, kind, service, date, time, status) VALUES "
-            "('SPA-1001', 'Sarah', 'spa', 'Swedish Massage', $1, '16:00', 'confirmed'), "
-            "('GYM-1002', 'Sarah', 'gym', 'Personal Training', $2, '18:00', 'confirmed'), "
-            "('SPA-1003', 'Alice', 'spa', 'Sauna Session', $3, '09:00', 'confirmed'), "
-            "('GYM-1004', 'Ravi', 'gym', 'CrossFit', $4, '07:00', 'confirmed')",
-            _days_from_today(1), _days_from_today(2), _days_from_today(1), _days_from_today(1),
-        )
-        logger.info("gym database seeded", extra={"event": "gym.seeded"})
 
     # -- member helpers ------------------------------------------------------
     async def _member(self, name: str) -> asyncpg.Record | None:
@@ -295,13 +312,12 @@ class GymDB:
 
     async def cancel_bookings(self, args: dict[str, Any]) -> dict[str, Any]:
         name = str(args.get("customerName") or "")
-        result = await self._run(
-            "UPDATE bookings SET status = 'cancelled' WHERE lower(member_name) = lower($1) AND status = 'confirmed'",
-            name,
-        )
-        count = 0
         conn = await self._conn()
         try:
+            await conn.execute(
+                "UPDATE bookings SET status = 'cancelled' WHERE lower(member_name) = lower($1) AND status = 'confirmed'",
+                name,
+            )
             count = await conn.fetchval(
                 "SELECT count(*) FROM bookings WHERE lower(member_name) = lower($1) AND status = 'cancelled' AND "
                 "created_at > now() - interval '10 minutes'", name

@@ -101,6 +101,9 @@ class DashboardDB:
         # Short connect timeout: a down DB must never stall a conversation turn.
         conn = await asyncpg.connect(self.dsn, timeout=3.0)
         await conn.execute(_SCHEMA)
+        from .gym_db import ensure_gym
+
+        await ensure_gym(conn)
         return conn
 
     async def _run(self, sql: str, *args: Any) -> None:
@@ -320,46 +323,65 @@ class DashboardDB:
         }
 
     async def appointments(self) -> list[dict[str, Any]]:
+        # Live source of truth: the gym bookings table (seeded + live inserts).
         rows = await self._fetch(
-            "SELECT booking_id, customer, session, date, time, status, created_at "
-            "FROM appointments ORDER BY created_at DESC LIMIT 200"
+            "SELECT booking_id, member_name, kind, service, date, time, status, created_at "
+            "FROM bookings ORDER BY created_at DESC LIMIT 200"
         )
         return [
             {
                 "id": str(r["booking_id"]), "bookingId": str(r["booking_id"]),
-                "customer": r["customer"], "session": r["session"], "date": r["date"],
-                "time": r["time"], "status": r["status"], "createdAt": _iso(r["created_at"]),
+                "customer": r["member_name"], "session": f"{r['kind']} · {r['service']}",
+                "date": r["date"], "time": r["time"], "status": r["status"],
+                "createdAt": _iso(r["created_at"]),
             }
             for r in rows
         ]
 
     async def orders(self) -> list[dict[str, Any]]:
+        # Live source of truth: the gym orders table (seeded + live inserts).
         rows = await self._fetch(
-            "SELECT order_id, customer, items::text AS items, status, total, created_at FROM orders "
-            "ORDER BY created_at DESC LIMIT 200"
+            "SELECT order_id, member_name, items::text AS items, status, total, created_at "
+            "FROM gym_orders ORDER BY created_at DESC LIMIT 200"
         )
         return [
             {
                 "id": str(r["order_id"]), "orderId": str(r["order_id"]),
-                "customer": r["customer"], "items": json.loads(r["items"] or "[]"),
+                "customer": r["member_name"], "items": json.loads(r["items"] or "[]"),
                 "status": r["status"], "total": float(r["total"] or 0), "createdAt": _iso(r["created_at"]),
             }
             for r in rows
         ]
 
     async def customers(self) -> list[dict[str, Any]]:
+        # Live source of truth: gym members + memberships + upcoming bookings.
         rows = await self._fetch(
-            "SELECT name, tier, membership_status, visits, last_visit, ltv, upcoming_booking::text AS upcoming_booking "
-            "FROM customers ORDER BY updated_at DESC LIMIT 200"
+            """
+            SELECT m.name, m.joined_on, ms.tier, ms.status, ms.visits_this_month, ms.ltv, ms.expires_on,
+              (SELECT b.service FROM bookings b
+               WHERE lower(b.member_name) = lower(m.name) AND b.status = 'confirmed' AND b.date >= $1
+               ORDER BY b.date, b.time LIMIT 1) AS next_session,
+              (SELECT b.date FROM bookings b
+               WHERE lower(b.member_name) = lower(m.name) AND b.status = 'confirmed' AND b.date >= $1
+               ORDER BY b.date, b.time LIMIT 1) AS next_date,
+              (SELECT b.time FROM bookings b
+               WHERE lower(b.member_name) = lower(m.name) AND b.status = 'confirmed' AND b.date >= $1
+               ORDER BY b.date, b.time LIMIT 1) AS next_time
+            FROM members m JOIN memberships ms ON ms.member_id = m.id
+            ORDER BY ms.ltv DESC LIMIT 200
+            """,
+            date.today().isoformat(),
         )
         result = []
         for r in rows:
-            booking = json.loads(r["upcoming_booking"]) if r.get("upcoming_booking") else None
+            upcoming = None
+            if r.get("next_session"):
+                upcoming = {"session": r["next_session"], "date": r["next_date"], "time": r["next_time"]}
             result.append({
                 "id": str(r["name"]).lower(), "name": r["name"], "tier": r["tier"],
-                "membershipStatus": r["membership_status"], "visits": int(r["visits"] or 0),
-                "lastVisit": _iso(r.get("last_visit")), "ltv": float(r["ltv"] or 0),
-                "upcomingBooking": booking if isinstance(booking, dict) else None,
+                "membershipStatus": r["status"], "visits": int(r["visits_this_month"] or 0),
+                "lastVisit": None, "ltv": float(r["ltv"] or 0),
+                "upcomingBooking": upcoming,
             })
         return result
 
