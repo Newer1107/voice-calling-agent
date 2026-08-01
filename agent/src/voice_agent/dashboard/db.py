@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS conversations (
   message_count INT DEFAULT 0,
   messages JSONB NOT NULL DEFAULT '[]'
 );
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS room_name TEXT;
 CREATE TABLE IF NOT EXISTS tool_executions (
   id BIGSERIAL PRIMARY KEY,
   conversation_id TEXT,
