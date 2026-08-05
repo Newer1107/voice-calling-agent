@@ -36,3 +36,17 @@ next-env.d.ts
 *.log
 .DS_Store
 Thumbs.db
+
+# --- school WhatsApp automation project (lives in whatsapp-workflow repo) ---
+# These files belong to the school project, versioned in whatsapp-workflow/.
+# Keep the gym repo clean of them.
+whatsapp-workflow/
+whatsapp-portal/
+prompt.txt
+SGBS-Chatbot-Knowledge-Base.md
+SGBS Brochure.pdf
+SGB_Pre_Primary Brochure.pdf
+desktop-*.png
+mobile-*.png
+
+# playwright tooling.playwright-mcp/
