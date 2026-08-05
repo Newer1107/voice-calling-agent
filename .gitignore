@@ -1,5 +1,5 @@
 # --- secrets & local config (never commit) ---
-# opencode.json holds the live n8n MCP bearer token — machine-local tooling.
+# opencode.json holds the live n8n MCP bearer token â€” machine-local tooling.
 opencode.json
 opencode.jsonc
 .opencode/
@@ -49,4 +49,5 @@ SGB_Pre_Primary Brochure.pdf
 desktop-*.png
 mobile-*.png
 
-# playwright tooling.playwright-mcp/
+# playwright tooling
+.playwright-mcp/
